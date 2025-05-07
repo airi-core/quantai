@@ -869,6 +869,6 @@ if __name__ == "__main__":
     # Jalankan pipeline utama hanya jika config berhasil dimuat
     if config:
         run_pipeline(config)
-    else:
-        logger.error("Tidak ada konfigurasi yang tersedia. Menghentikan eksekusi.")
-        exit(1)
+    else: # <--- Indentasi untuk 'else:' harus sejajar dengan 'if config:'
+        logger.error("Tidak ada konfigurasi yang tersedia. Menghentikan eksekusi.") # <--- Indentasi di dalam blok 'else:'
+        exit(1) # <--- Indentasi di dalam blok 'else:'
