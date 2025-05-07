@@ -727,7 +727,7 @@ def run_pipeline(config):
         scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
         eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
         predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
-        tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
+        tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard']['log_dir']) # Path ini digunakan oleh callback
 
         # Menggunakan API TensorFlow IO GFile: makedirs
         # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
