@@ -13,7 +13,9 @@ data:
   raw_path: './data/raw/XAU_15m_data.csv'  # Gunakan path relatif dengan ./
   train_split: 0.7  # Lebih banyak data untuk testing
   val_split: 0.15
-
+  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung)
+  # PASTIKAN BAGIAN INI ADA DAN TERINDENTASI DENGAN BENAR DI BAWAH 'data:'
+  feature_cols_numeric: ['Time','Open', 'High', 'Low', 'Close', 'Volume'] # <-- PASTIKAN NAMA KOLOM INI SESUAI DENGAN HEADER CSV ANDA
 # Konfigurasi Model
 model:
   architecture:
