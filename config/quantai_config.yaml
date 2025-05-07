@@ -14,7 +14,7 @@ parameter_windowing:
 data:
   # Path ke file data mentah (CSV atau JSON)
   # Path ini relatif terhadap root repositori GitHub
-  raw_path: 'data/raw/XAU_5m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
+  raw_path: 'data/raw/XAU_15m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
 
   train_split: 0.8 # Proporsi data untuk pelatihan
   val_split: 0.1 # Proporsi data untuk validasi (sisanya untuk pengujian)
