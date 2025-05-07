@@ -1,0 +1,93 @@
+# config/project_config.yaml
+
+# --- Konfigurasi Data ---
+data:
+  processed_data_path: data/processed/XAU_15m_data_processed.json
+  scaler_input_path: data/processed/scalers/scaler_input.pkl
+  scaler_target_path: data/processed/scalers/scaler_target.pkl
+  window_size: 256
+  input_features: ['Open', 'High', 'Low', 'Close', 'Volume']
+  target_features: ['High', 'Low', 'Close']
+  train_split_ratio: 0.8
+  val_split_ratio: 0.1
+
+# --- Konfigurasi Model ---
+model:
+  name: quantAI
+  type: Sequential
+  architecture:
+    - class_name: LSTM
+      config:
+        units: 128
+        return_sequences: true
+        activation: tanh
+        recurrent_activation: sigmoid
+        recurrent_dropout: 0.0
+        kernel_regularizer:
+          class_name: 'l2'
+          config:
+            l2: 0.0001
+    - class_name: BatchNormalization
+    - class_name: Dropout
+      config:
+        rate: 0.236
+    - class_name: Bidirectional
+      config:
+        layer:
+          class_name: LSTM
+          config:
+            units: 64
+            return_sequences: false
+            activation: tanh
+            recurrent_activation: sigmoid
+    - class_name: BatchNormalization
+    - class_name: Dropout
+      config:
+        rate: 0.382
+    - class_name: Dense
+      config:
+        units: 32
+        activation: relu
+        kernel_regularizer:
+          class_name: 'l2'
+          config:
+            l2: 0.0001
+    - class_name: Dense
+      config:
+        units: 3
+        activation: linear
+
+# --- Konfigurasi Pelatihan ---
+train:
+  optimizer:
+    class_name: Adam
+    config:
+      lr: 0.01
+      # Catatan: Adam standar Keras tidak punya param 'momentum'.
+      # Jika butuh momentum, pertimbangkan optimizer lain atau implementasi kustom.
+      # beta_1: 0.9 # Default Adam
+      # beta_2: 0.999 # Default Adam
+  loss: mse # Mean Squared Error
+  metrics: ['mae', 'mse']
+  epochs: 50
+  batch_size: 32
+  # callbacks: # Contoh konfigurasi callback (opsional)
+  #   - class_name: EarlyStopping
+  #     config:
+  #       monitor: val_loss
+  #       patience: 10
+  #   - class_name: ModelCheckpoint
+  #     config:
+  #       filepath: models/checkpoints/best_model.keras
+  #       monitor: val_loss
+  #       save_best_only: true
+
+# --- Konfigurasi Penyimpanan Model ---
+save:
+  model_save_path: models/saved_models/quantAI_lstm_ohlcv_hlc_w256
+
+# --- Konfigurasi Prediksi ---
+predict:
+  # Tidak ada konfigurasi spesifik di sini saat ini,
+  # tapi bisa ditambahkan jika ada parameter khusus prediksi.
+  pass
