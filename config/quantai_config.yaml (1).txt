@@ -1,0 +1,30 @@
+# Konfigurasi Global
+seed: 42
+mode: 'initial_train'
+use_text_input: False  # Nonaktifkan input teks untuk menyederhanakan
+
+# Parameter Windowing
+parameter_windowing:
+  window_size: 30  # Lebih kecil
+  window_shift: 3  # Lebih besar untuk mengurangi redundansi
+
+# Konfigurasi Data
+data:
+  raw_path: './data/raw/XAU_15m_data.csv'  # Gunakan path relatif dengan ./
+  train_split: 0.7  # Lebih banyak data untuk testing
+  val_split: 0.15
+
+# Konfigurasi Model
+model:
+  architecture:
+    gru_units: 32  # Lebih sederhana
+    dropout_rate: 0.3  # Lebih tinggi untuk mencegah overfitting
+    use_conv1d: False  # Nonaktifkan untuk menyederhanakan
+    embedding_dim: 16  # Lebih kecil
+
+# Konfigurasi Pelatihan
+training:
+  batch_size: 64  # Lebih besar untuk training yang lebih stabil
+  epochs: 50  # Lebih sedikit epoch
+  learning_rate: 0.0005  # Lebih kecil
+  early_stopping_patience: 5  # Lebih cepat berhenti
