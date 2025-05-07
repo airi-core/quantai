@@ -116,6 +116,43 @@ def process_text_for_model(text_tensor, max_sequence_length, vocabulary_table):
 
     return padded_token_ids
 
+# Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
+@tf.function
+def process_dataset_element(inputs, target_elem, use_text_input, max_text_sequence_length, vocabulary_table):
+    """Memproses elemen dataset (termasuk teks) sebelum windowing."""
+    if use_text_input:
+        numeric_elem, text_elem = inputs
+        # Memproses teks menggunakan API TensorFlow Strings dan Lookup
+        processed_text = process_text_for_model(text_elem, max_text_sequence_length, vocabulary_table)
+        processed_inputs = (numeric_elem, processed_text)
+    else:
+        numeric_elem = inputs
+        processed_inputs = numeric_elem
+
+    return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
+
+
+def window_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table):
+    """
+    Membuat pipeline tf.data dengan windowing, batching, dll.
+    Pemrosesan elemen (termasuk teks) dilakukan sebelum windowing.
+    """
+    # Terapkan pemrosesan elemen (termasuk teks) sebelum windowing
+    dataset_processed_elements = dataset_raw.map(
+        lambda inputs, target_elem: process_dataset_element(inputs, target_elem, use_text_input, max_text_sequence_length, vocabulary_table),
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
+
+    # Kemudian terapkan windowing
+    dataset_windowed = dataset_processed_elements.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
+
+    # Kemudian flat_map untuk menggabungkan window dan batch
+    # Menggunakan API TensorFlow Data: flat_map
+    # Menggunakan API TensorFlow Data: batch (untuk mengumpulkan elemen dalam window)
+    dataset_batched_windows = dataset_windowed.flat_map(lambda window: window.batch(window_size))
+
+    return dataset_batched_windows
+
 
 def build_quantai_model(config, numeric_input_shape, text_input_shape, num_target_features, vocabulary_size=None):
     """
@@ -367,7 +404,6 @@ def run_pipeline(config):
         logger.error(f"Error selama Langkah 1: {e}")
         return # Hentikan pipeline jika ada error fatal
 
-
     # --- Langkah 2: Scaling Data & Pembuatan Pipeline tf.data ---
     logger.info("Langkah 2: Scaling data dan membuat pipeline tf.data...")
     scaler_input = None # Inisialisasi scaler
@@ -423,46 +459,58 @@ def run_pipeline(config):
             dataset_train_raw = tf.data.Dataset.from_tensor_slices((scaled_input_train, scaled_target_train))
             dataset_val_raw = tf.data.Dataset.from_tensor_slices((scaled_input_val, scaled_target_val))
             # Target test tidak diskalakan, jadi gunakan target_test asli
-            dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_input_test, target_test))
+            dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_test_numeric, target_test)) # Menggunakan scaled_test_numeric di sini
 
-
-        # Fungsi untuk membuat window dan memproses elemen dataset
-        # Menggunakan @tf.function untuk kompilasi grafik
+        # PERBAIKAN: Sesuaikan pemetaan tf.data untuk memproses elemen sebelum windowing
+        # Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
         @tf.function
-        def create_window_and_process_fn(numeric_elem, text_elem, target_elem):
-            """Memproses elemen dataset (termasuk teks) di dalam pipeline map."""
-            processed_text = text_elem # Default jika teks tidak digunakan
-
+        def process_dataset_element(inputs, target_elem):
+            """Memproses elemen dataset (termasuk teks) sebelum windowing."""
+            processed_text = None # Default jika teks tidak digunakan
             if config['use_text_input']:
+                numeric_elem, text_elem = inputs
                 # Memproses teks menggunakan API TensorFlow Strings dan Lookup
-                 # Menggunakan API TensorFlow Strings: split
-                 # Menggunakan API TensorFlow Lookup: lookup
                 processed_text = process_text_for_model(text_elem, config['data']['max_text_sequence_length'], vocabulary_table)
-
-            # Mengembalikan tuple yang sesuai dengan struktur input model
-            if config['use_text_input']:
-                return (numeric_elem, processed_text), target_elem
+                processed_inputs = (numeric_elem, processed_text)
             else:
-                return numeric_elem, target_elem
+                numeric_elem = inputs
+                processed_inputs = numeric_elem
 
-        # Fungsi untuk membuat window dari dataset dan menerapkan pemrosesan
-        def window_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table):
-             # Menggunakan API TensorFlow Data: window
-            dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
-             # Menggunakan API TensorFlow Data: flat_map
-             # Menggunakan API TensorFlow Data: batch (untuk mengumpulkan elemen dalam window)
-             # Menggunakan API TensorFlow Data: map (untuk memproses setiap window)
-            dataset_processed = dataset_windowed.flat_map(
-                lambda window: window.batch(window_size) # Mengumpulkan elemen dalam window menjadi satu tensor
-                .map(
-                    lambda numeric_elem, text_elem, target_elem: create_window_and_process_fn(numeric_elem, text_elem, target_elem), # Menerapkan pemrosesan teks
-                    num_parallel_calls=tf.data.AUTOTUNE
-                )
+            return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
+
+        # Fungsi untuk membuat pipeline tf.data dengan windowing, batching, dll.
+        def create_tf_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table, shuffle=False, batch_size=None):
+            """
+            Membuat pipeline tf.data dengan pemrosesan elemen, windowing, batching, dll.
+            """
+            # Terapkan pemrosesan elemen (termasuk teks) sebelum windowing
+            dataset_processed_elements = dataset_raw.map(
+                lambda inputs, target_elem: process_dataset_element(inputs, target_elem),
+                num_parallel_calls=tf.data.AUTOTUNE
             )
-            return dataset_processed
+
+            # Kemudian terapkan windowing
+            dataset_windowed = dataset_processed_elements.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
+
+            # Kemudian flat_map untuk menggabungkan window dan batch
+            dataset_batched_windows = dataset_windowed.flat_map(lambda window: window.batch(window_size))
+
+            # Terapkan shuffle jika diminta (hanya untuk pelatihan)
+            if shuffle:
+                dataset_batched_windows = dataset_batched_windows.shuffle(config['data']['shuffle_buffer_size'])
+
+            # Terapkan batching akhir
+            if batch_size:
+                dataset_batched_windows = dataset_batched_windows.batch(batch_size)
+
+            # Cache dan prefetch
+            dataset_batched_windows = dataset_batched_windows.cache() # Cache setelah windowing dan batching window
+            dataset_batched_windows = dataset_batched_windows.prefetch(tf.data.AUTOTUNE)
+
+            return dataset_batched_windows
 
 
-        # Membuat Pipeline tf.data (Windowing, Batching, Caching, Prefetching)
+        # Membuat Pipeline tf.data untuk Train, Val, Test
         # Menggunakan API TensorFlow Data: window
         # Menggunakan API TensorFlow Data: flat_map
         # Menggunakan API TensorFlow Data: shuffle
@@ -472,23 +520,45 @@ def run_pipeline(config):
         # Menggunakan API TensorFlow Data: AUTOTUNE
 
         # Pipeline Pelatihan
-        dataset_train = window_dataset(dataset_train_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True, config['use_text_input'], config['data']['max_text_sequence_length'], vocabulary_table)
-        dataset_train = dataset_train.shuffle(config['data']['shuffle_buffer_size'])
-        dataset_train = dataset_train.batch(config['training']['batch_size'])
-        dataset_train = dataset_train.cache() # Cache setelah windowing dan batching window
-        dataset_train = dataset_train.prefetch(tf.data.AUTOTUNE)
+        dataset_train = create_tf_dataset(
+            dataset_train_raw,
+            config['parameter_windowing']['window_size'],
+            config['parameter_windowing']['window_shift'],
+            True, # drop_remainder
+            config['use_text_input'],
+            config['data']['max_text_sequence_length'],
+            vocabulary_table,
+            shuffle=True,
+            batch_size=config['training']['batch_size']
+        )
 
         # Pipeline Validasi (tanpa shuffle)
-        dataset_val = window_dataset(dataset_val_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True, config['use_text_input'], config['data']['max_text_sequence_length'], vocabulary_table)
-        dataset_val = dataset_val.batch(config['training']['batch_size'])
-        dataset_val = dataset_val.cache()
-        dataset_val = dataset_val.prefetch(tf.data.AUTOTUNE)
+        dataset_val = create_tf_dataset(
+            dataset_val_raw,
+            config['parameter_windowing']['window_size'],
+            config['parameter_windowing']['window_shift'],
+            True, # drop_remainder
+            config['use_text_input'],
+            config['data']['max_text_sequence_length'],
+            vocabulary_table,
+            shuffle=False,
+            batch_size=config['training']['batch_size']
+        )
 
         # Pipeline Pengujian (tanpa shuffle, tanpa cache jika data test besar)
         # Cache data test hanya jika ukurannya relatif kecil
-        dataset_test = window_dataset(dataset_test_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True, config['use_text_input'], config['data']['max_text_sequence_length'], vocabulary_table)
-        dataset_test = dataset_test.batch(config['training']['batch_size'])
-        dataset_test = dataset_test.prefetch(tf.data.AUTOTUNE)
+        dataset_test = create_tf_dataset(
+            dataset_test_raw,
+            config['parameter_windowing']['window_size'],
+            config['parameter_windowing']['window_shift'],
+            True, # drop_remainder
+            config['use_text_input'],
+            config['data']['max_text_sequence_length'],
+            vocabulary_table,
+            shuffle=False,
+            batch_size=config['training']['batch_size']
+        )
+
 
         logger.info("Pipeline tf.data selesai dibuat.")
 
@@ -829,8 +899,8 @@ def run_pipeline(config):
                 else:
                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-           # else:
-             #    logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+            else:
+                 logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
 
 
         logger.info("Langkah 6 selesai.")
