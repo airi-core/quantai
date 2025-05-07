@@ -7,7 +7,7 @@ use_text_input: True # Apakah menggunakan fitur teks deskriptif
 
 # Parameter Windowing
 parameter_windowing:
-  window_size: 256 # Panjang window data historis (misal: 60 periode)
+  window_size: 60 # Panjang window data historis (misal: 60 periode)
   window_shift: 1 # Pergeseran window antar sampel (1 untuk tumpang tindih penuh)
 
 # Konfigurasi Data
