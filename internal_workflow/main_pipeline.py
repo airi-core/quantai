@@ -303,7 +303,7 @@ def run_pipeline(config):
             logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN.")
 
         # Pastikan kolom harga adalah numerik
-        price_cols = ['Open', 'High', 'Low', 'Close', 'Volume'] # Tambahkan Volume
+        price_cols = ['Date','Open', 'High', 'Low', 'Close', 'Volume'] # Tambahkan Volume
         for col in price_cols:
             if col in df.columns:
                 # Menggunakan Pandas to_numeric
