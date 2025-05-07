@@ -17,7 +17,7 @@ on:
 
 jobs:
   train:
-    runs-on: [self-hosted, gcp-deep-learning-vm]
+    runs-on: ubuntu-latest-xl
     
     steps:
       - name: Checkout code
