@@ -19,7 +19,7 @@ on:
       config_path:
         description: 'Path to the configuration file (relative to repo root)'
         required: true
-        default: 'config/quantai_config.yaml' # Default path ke file config
+        default: 'quantai_config.yaml' # Default path ke file config
 
 # Menentukan job yang akan dijalankan
 jobs:
@@ -45,7 +45,13 @@ jobs:
       # Pastikan file requirements.txt ada di root repositori Anda
       - name: Install dependencies
         run: pip install -r requirements.txt
-
+      
+      - name: Verify data exists
+        run: |
+          if [ ! -f "data/raw/XAU_15m_data.csv" ]; then
+            echo "Data file not found!"
+            exit 1
+          fi
       # Langkah 4: Jalankan script pipeline utama
       # Gunakan path ke script dan path ke file config
       - name: Run QuantAI Pipeline
