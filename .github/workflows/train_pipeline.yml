@@ -1,54 +1,66 @@
+# .github/workflows/train_pipeline.yml
+
 name: QuantAI Training Pipeline
 
+# Menentukan kapan workflow ini akan berjalan
 on:
   push:
-    branches: [main]
+    branches:
+      - main # Ganti 'main' dengan nama branch utama Anda jika berbeda
     paths:
-      - 'internal_workflow/main_pipeline.py'
-      - 'quantai_config.yaml'
-      - 'requirements.txt'
-      - 'data/raw/XAU_15m_data.csv'
+      - 'internal_workflow/main_pipeline.py' # Trigger jika kode pipeline berubah
+      - 'config/quantai_config.yaml'         # Trigger jika file config berubah
+      - 'requirements.txt'                  # Trigger jika dependensi berubah
+      - 'data/raw/XAU_15m_data.csv'          # Trigger jika data berubah (opsional, hati-hati jika data sangat besar)
+
+  # Atau, Anda bisa menggunakan workflow_dispatch untuk memicu secara manual dari UI GitHub
   workflow_dispatch:
     inputs:
       config_path:
-        description: 'Path to configuration file'
+        description: 'Path to the configuration file (relative to repo root)'
         required: true
-        default: 'quantai_config.yaml'
+        default: 'config/quantai_config.yaml' # Default path ke file config
 
+# Menentukan job yang akan dijalankan
 jobs:
   train:
-    runs-on: [self-hosted, gcp-deep-learning-vm]
-    
+    # Runner environment
+    # Gunakan 'ubuntu-latest' standar. Jika butuh GPU, cari runner yang menyediakan (biasanya self-hosted atau layanan cloud eksternal)
+    runs-on: ubuntu-latest
+
+    # Langkah-langkah yang akan dijalankan di runner
     steps:
+      # Langkah 1: Checkout kode repositori
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Langkah 2: Setup Python
+      - name: Set up Python 3.9 # Ganti versi Python jika perlu
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 1
-      
-      - name: Verify VM Environment
-        run: |
-          nvidia-smi
-          python -c "import tensorflow as tf; print('TensorFlow:', tf.__version__); print('GPU Devices:', tf.config.list_physical_devices('GPU'))"
-      
-      - name: Install project dependencies
+          python-version: '3.9'
+          cache: 'pip' # Cache dependensi pip untuk eksekusi lebih cepat
+
+      # Langkah 3: Instal dependensi
+      # Pastikan file requirements.txt ada di root repositori Anda
+      - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Validate data availability
-        run: |
-          if [ ! -f "data/raw/XAU_15m_data.csv" ]; then
-            echo "ERROR: Data file not found!"
-            exit 1
-          fi
-      
-      - name: Execute training pipeline
-        env:
-          TF_XLA_FLAGS: '--tf_xla_enable_xla_devices --tf_xla_auto_jit=2'
-          TF_ENABLE_ONEDNN_OPTS: '1'
-        run: python internal_workflow/main_pipeline.py --config ${{ github.event.inputs.config_path || 'quantai_config.yaml' }}
-      
-      - name: Upload model artifacts
+
+      # Langkah 4: Jalankan script pipeline utama
+      # Gunakan path ke script dan path ke file config
+      - name: Run QuantAI Pipeline
+        # Jika dipicu oleh push, gunakan path config hardcoded
+        # Jika dipicu oleh workflow_dispatch, gunakan input config_path
+        run: python internal_workflow/main_pipeline.py --config ${{ github.event.inputs.config_path || 'config/quantai_config.yaml' }}
+
+      # Langkah 5: Upload artefak hasil
+      # Mengunggah SavedModel, scaler, hasil evaluasi, dan prediksi
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quantai-model-output
-          path: quantai_output/
-          retention-days: 7
+          name: quantai-pipeline-output
+          path: quantai_output/ # Path ini harus sesuai dengan output['base_dir'] di config YAML
+          # Jika Anda ingin mengunggah log TensorBoard juga, tambahkan path-nya di sini
+          # path: |
+          #   quantai_output/
+          #   quantai_output/logs/tensorboard/ # Jika log tensorboard di sub-direktori ini
