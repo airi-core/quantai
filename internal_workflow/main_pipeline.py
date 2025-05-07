@@ -826,8 +826,8 @@ def run_pipeline(config):
                 else:
                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-            else:
-                 logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+            # else:
+                 # logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
 
 
         logger.info("Langkah 6 selesai.")
