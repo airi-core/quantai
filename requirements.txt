@@ -6,28 +6,3 @@ PyYAML
 scikit-learn
 joblib
 
-# Daftar paket Python yang dibutuhkan oleh proyek quantAI
-
-# TensorFlow - untuk membangun, melatih, dan memuat model Keras
-tensorflow>=2.1
-
-# NumPy - untuk manipulasi array dan operasi numerik
-numpy>=1.21
-
-# Pandas - untuk pemrosesan data tabular
-pandas>=1.0
-
-# Scikit-learn - untuk scaling data (MinMaxScaler) dan metrik evaluasi
-scikit-learn>=0.24
-
-# PyYAML - untuk membaca file konfigurasi YAML
-pyyaml>=5.0
-
-# Joblib - untuk menyimpan dan memuat objek Python (seperti scaler)
-joblib>=1.0
-
-# Matplotlib - untuk membuat plot (opsional, jika Anda ingin menyimpan plot history)
-matplotlib>=3.0
-
-# Anda mungkin perlu menambahkan library lain di sini jika proyek Anda menggunakannya.
-# Contoh: jika Anda menggunakan library spesifik untuk mengambil data real-time.
