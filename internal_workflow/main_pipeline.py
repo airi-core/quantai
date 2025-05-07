@@ -248,7 +248,8 @@ def run_pipeline(config):
              return # Hentikan pipeline jika file data tidak ada
 
         if data_path.endswith('.csv'):
-            df = pd.read_csv(data_path)
+            # PERBAIKAN: Tambahkan argumen sep=';' untuk membaca file CSV dengan pemisah titik koma
+            df = pd.read_csv(data_path, sep=';')
         elif data_path.endswith('.json'):
             df = pd.read_json(data_path)
         else:
@@ -365,6 +366,7 @@ def run_pipeline(config):
     except Exception as e:
         logger.error(f"Error selama Langkah 1: {e}")
         return # Hentikan pipeline jika ada error fatal
+
 
     # --- Langkah 2: Scaling Data & Pembuatan Pipeline tf.data ---
     logger.info("Langkah 2: Scaling data dan membuat pipeline tf.data...")
@@ -646,7 +648,7 @@ def run_pipeline(config):
             # model.trainable_variables
             # tf.cond, tf.while_loop (untuk logika otonom dalam grafik)
             # tf.py_function (untuk logika otonom di Python)
-            # model.train_on_batch (untuk update per batch dalam loop Python)
+            # train_on_batch (untuk update per batch dalam loop Python)
             # Contoh (pseudocode):
             # @tf.function
             # def custom_train_step(inputs, targets):
@@ -727,7 +729,8 @@ def run_pipeline(config):
         scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
         eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
         predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
-        tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard']['log_dir']) # Path ini digunakan oleh callback
+        tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
+
 
         # Menggunakan API TensorFlow IO GFile: makedirs
         # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
@@ -826,8 +829,8 @@ def run_pipeline(config):
                 else:
                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-            # else:
-                 # logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+           # else:
+             #    logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
 
 
         logger.info("Langkah 6 selesai.")
