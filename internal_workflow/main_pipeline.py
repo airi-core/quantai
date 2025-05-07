@@ -42,8 +42,6 @@ import json # Untuk menyimpan hasil evaluasi/prediksi dalam JSON
 import argparse # Untuk membaca argumen command-line
 
 # --- Konfigurasi Global ---
-# Path ke file konfigurasi akan diberikan melalui argumen command-line
-# CONFIG_PATH = 'quantai_config.yaml' # Tidak lagi hardcoded di sini
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -903,9 +901,6 @@ def run_pipeline(config):
                     logger.info("Prediksi berhasil disimpan.")
                 else:
                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
-
-        #    else:
-        #       logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
 
 
         logger.info("Langkah 6 selesai.")
