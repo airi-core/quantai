@@ -18,18 +18,16 @@ on:
 jobs:
   train:
     runs-on: ubuntu-latest
+
+steps:
+  - name: Checkout kode
+    uses: actions/checkout@v4
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      
-      - name: Verify VM Environment
-        run: |
-          nvidia-smi
-          python -c "import tensorflow as tf; print('TensorFlow:', tf.__version__); print('GPU Devices:', tf.config.list_physical_devices('GPU'))"
-      
+  - name: Optimalkan Lingkungan Komputasi
+    run: |
+      echo "Memaksimalkan alokasi resource sistem..."
+      # Konfigurasi memory limits
+      export NODE_OPTIONS="--max-old-space-size=4096"      
       - name: Install project dependencies
         run: pip install -r requirements.txt
       
