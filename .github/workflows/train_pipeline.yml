@@ -1,75 +1,66 @@
-# quantai_config.yaml
+# .github/workflows/train_pipeline.yml
 
-# Konfigurasi Global
-seed: 42
-mode: 'initial_train' # Mode operasional: 'initial_train', 'incremental_learn', 'predict_only'
-use_text_input: True # Apakah menggunakan fitur teks deskriptif
+name: QuantAI Training Pipeline
 
-# Parameter Windowing
-parameter_windowing:
-  window_size: 60 # Panjang window data historis (misal: 60 periode)
-  window_shift: 1 # Pergeseran window antar sampel (1 untuk tumpang tindih penuh)
+# Menentukan kapan workflow ini akan berjalan
+on:
+  push:
+    branches:
+      - main # Ganti 'main' dengan nama branch utama Anda jika berbeda
+    paths:
+      - 'internal_workflow/main_pipeline.py' # Trigger jika kode pipeline berubah
+      - 'config/quantai_config.yaml'         # Trigger jika file config berubah
+      - 'requirements.txt'                  # Trigger jika dependensi berubah
+      - 'data/raw/XAU_5m_data.csv'          # Trigger jika data berubah (opsional, hati-hati jika data sangat besar)
 
-# Konfigurasi Data
-data:
-  # Path ke file data mentah (CSV atau JSON)
-  # Path ini relatif terhadap root repositori GitHub
-  raw_path: 'data/raw/XAU_5m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
+  # Atau, Anda bisa menggunakan workflow_dispatch untuk memicu secara manual dari UI GitHub
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: 'Path to the configuration file (relative to repo root)'
+        required: true
+        default: 'config/quantai_config.yaml' # Default path ke file config
 
-  train_split: 0.8 # Proporsi data untuk pelatihan
-  val_split: 0.1 # Proporsi data untuk validasi (sisanya untuk pengujian)
+# Menentukan job yang akan dijalankan
+jobs:
+  train:
+    # Runner environment
+    # Gunakan 'ubuntu-latest' standar. Jika butuh GPU, cari runner yang menyediakan (biasanya self-hosted atau layanan cloud eksternal)
+    runs-on: ubuntu-latest
 
-  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung)
-  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA
+    # Langkah-langkah yang akan dijalankan di runner
+    steps:
+      # Langkah 1: Checkout kode repositori
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  # Parameter Pemrosesan Teks (jika use_text_input: True)
-  max_text_sequence_length: 20 # Panjang maksimum sekuens token teks setelah tokenisasi
-  # Catatan: Kosakata akan dibuat otomatis dari data pelatihan teks
+      # Langkah 2: Setup Python
+      - name: Set up Python 3.9 # Ganti versi Python jika perlu
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip' # Cache dependensi pip untuk eksekusi lebih cepat
 
-  # Parameter Pipeline tf.data
-  shuffle_buffer_size: 1000 # Ukuran buffer shuffle tf.data (untuk pelatihan)
+      # Langkah 3: Instal dependensi
+      # Pastikan file requirements.txt ada di root repositori Anda
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-# Konfigurasi Arsitektur Model QuantAI
-model:
-  architecture:
-    gru_units: 64 # Jumlah unit di layer GRU
-    dropout_rate: 0.2 # Tingkat dropout
-    use_conv1d: True # Gunakan Layer Conv1D tambahan setelah GRU?
-    conv1d_filters: 32 # Jumlah filter Conv1D
-    conv1d_kernel_size: 3 # Ukuran kernel Conv1D
-    conv1d_dilation_rate: 2 # Tingkat dilatasi Conv1D (untuk TCN-inspired)
-    embedding_dim: 32 # Dimensi vektor embedding untuk fitur teks
+      # Langkah 4: Jalankan script pipeline utama
+      # Gunakan path ke script dan path ke file config
+      - name: Run QuantAI Pipeline
+        # Jika dipicu oleh push, gunakan path config hardcoded
+        # Jika dipicu oleh workflow_dispatch, gunakan input config_path
+        run: python internal_workflow/main_pipeline.py --config ${{ github.event.inputs.config_path || 'config/quantai_config.yaml' }}
 
-  # Path untuk memuat model (jika mode bukan 'initial_train')
-  # Path ini relatif terhadap root repositori GitHub
-  load_path: 'quantai_output/saved_model/quantAI_model' # <-- SESUAIKAN JIKA PERLU
-
-  # Path untuk menyimpan model terlatih (SavedModel)
-  # Path ini relatif terhadap root repositori GitHub
-  save_path: 'quantai_output/saved_model/quantAI_model' # <-- SESUAIKAN JIKA PERLU
-
-# Konfigurasi Pelatihan
-training:
-  batch_size: 32 # Ukuran batch untuk pelatihan dan evaluasi
-  epochs: 100 # Jumlah epoch untuk pelatihan awal ('initial_train')
-  incremental_epochs: 10 # Jumlah epoch untuk pelatihan inkremental ('incremental_learn')
-  learning_rate: 0.001 # Tingkat pembelajaran optimizer Adam
-
-  # Parameter Callbacks
-  early_stopping_patience: 10 # Jumlah epoch tanpa peningkatan sebelum berhenti
-  lr_reduce_factor: 0.5 # Faktor pengurangan learning rate
-  lr_reduce_patience: 5 # Jumlah epoch tanpa peningkatan sebelum LR dikurangi
-  min_lr: 0.0001 # Learning rate minimum
-
-# Konfigurasi Output
-output:
-  # Base directory untuk semua output (model, scaler, hasil)
-  # Path ini relatif terhadap root repositori GitHub
-  base_dir: 'quantai_output' # <-- SESUAIKAN JIKA PERLU
-  model_subdir: 'saved_model/quantAI_model' # Subdirektori untuk SavedModel
-  scaler_subdir: 'scalers' # Subdirektori untuk scaler
-  eval_results_file: 'evaluation_metrics/eval_results.json' # File untuk hasil evaluasi
-  predictions_file: 'predictions/predictions.csv' # File untuk prediksi
-  tensorboard_log_dir: 'logs/tensorboard' # Direktori untuk log TensorBoard
-
-  save_predictions: True # Apakah menyimpan file prediksi pada data test
+      # Langkah 5: Upload artefak hasil
+      # Mengunggah SavedModel, scaler, hasil evaluasi, dan prediksi
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantai-pipeline-output
+          path: quantai_output/ # Path ini harus sesuai dengan output['base_dir'] di config YAML
+          # Jika Anda ingin mengunggah log TensorBoard juga, tambahkan path-nya di sini
+          # path: |
+          #   quantai_output/
+          #   quantai_output/logs/tensorboard/ # Jika log tensorboard di sub-direktori ini
