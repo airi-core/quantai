@@ -97,32 +97,27 @@ def process_text_for_model(text_tensor, max_sequence_length, vocabulary_table):
     Contoh: tokenisasi, lookup ID, padding.
     """
     # Menggunakan API TensorFlow Strings
-    tokens = tf.strings.split(text_tensor) # Memecah string menjadi token
+    tokens = tf.strings.split(text_tensor) # Returns RaggedTensor
 
     # Menggunakan API TensorFlow Lookup
-    # Mengonversi token string menjadi ID integer
-    token_ids = vocabulary_table.lookup(tokens)
+    # Converting string tokens to integer IDs
+    token_ids = vocabulary_table.lookup(tokens) # Returns RaggedTensor
 
-    # Padding atau pemotongan sekuens token ID
-    # Menggunakan API TensorFlow RaggedTensor untuk padding
-    # Konversi RaggedTensor ke DenseTensor dengan padding
-    # Menggunakan API Aritmatika untuk menghitung ukuran padding/pemotongan jika diperlukan
-    # Misalnya: tf.minimum(tf.size(token_ids), max_sequence_length)
-    padded_token_ids = token_ids.to_tensor(default_value=0, shape=(max_sequence_length,))
-
-    # Menggunakan API Aritmatika jika ada operasi numerik pada ID token
-    # Contoh sederhana: menambahkan 1 ke setiap ID (tidak umum, hanya ilustrasi)
-    # padded_token_ids = tf.add(padded_token_ids, 1)
+    # Padding or truncating the sequence of token IDs
+    # PERBAIKAN: Gunakan tf.ragged.to_tensor() sebagai pengganti token_ids.to_tensor()
+    # Ini untuk mengatasi AttributeError pada SymbolicTensor dalam graph context
+    padded_token_ids = tf.ragged.to_tensor(token_ids, default_value=0, shape=(max_sequence_length,))
 
     return padded_token_ids
 
 # Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
-@tf.function
+@tf.function # Keep this decorator for the main element processing function
 def process_dataset_element(inputs, target_elem, use_text_input, max_text_sequence_length, vocabulary_table):
     """Memproses elemen dataset (termasuk teks) sebelum windowing."""
+    processed_text = None # Default if text is not used
     if use_text_input:
         numeric_elem, text_elem = inputs
-        # Memproses teks menggunakan API TensorFlow Strings dan Lookup
+        # Process text using the corrected function
         processed_text = process_text_for_model(text_elem, max_text_sequence_length, vocabulary_table)
         processed_inputs = (numeric_elem, processed_text)
     else:
@@ -132,10 +127,9 @@ def process_dataset_element(inputs, target_elem, use_text_input, max_text_sequen
     return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
 
 
-def window_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table):
+def create_tf_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table, shuffle=False, batch_size=None):
     """
-    Membuat pipeline tf.data dengan windowing, batching, dll.
-    Pemrosesan elemen (termasuk teks) dilakukan sebelum windowing.
+    Membuat pipeline tf.data dengan pemrosesan elemen, windowing, batching, dll.
     """
     # Terapkan pemrosesan elemen (termasuk teks) sebelum windowing
     dataset_processed_elements = dataset_raw.map(
@@ -147,9 +141,19 @@ def window_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_t
     dataset_windowed = dataset_processed_elements.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
 
     # Kemudian flat_map untuk menggabungkan window dan batch
-    # Menggunakan API TensorFlow Data: flat_map
-    # Menggunakan API TensorFlow Data: batch (untuk mengumpulkan elemen dalam window)
     dataset_batched_windows = dataset_windowed.flat_map(lambda window: window.batch(window_size))
+
+    # Terapkan shuffle jika diminta (hanya untuk pelatihan)
+    if shuffle:
+        dataset_batched_windows = dataset_batched_windows.shuffle(config['data']['shuffle_buffer_size'])
+
+    # Terapkan batching akhir
+    if batch_size:
+        dataset_batched_windows = dataset_batched_windows.batch(batch_size)
+
+    # Cache dan prefetch
+    dataset_batched_windows = dataset_batched_windows.cache() # Cache setelah windowing dan batching window
+    dataset_batched_windows = dataset_batched_windows.prefetch(tf.data.AUTOTUNE)
 
     return dataset_batched_windows
 
@@ -459,17 +463,17 @@ def run_pipeline(config):
             dataset_train_raw = tf.data.Dataset.from_tensor_slices((scaled_input_train, scaled_target_train))
             dataset_val_raw = tf.data.Dataset.from_tensor_slices((scaled_input_val, scaled_target_val))
             # Target test tidak diskalakan, jadi gunakan target_test asli
-            dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_test_numeric, target_test)) # Menggunakan scaled_test_numeric di sini
+            dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_input_test, target_test))
 
-        # PERBAIKAN: Sesuaikan pemetaan tf.data untuk memproses elemen sebelum windowing
+
         # Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
-        @tf.function
+        @tf.function # Keep this decorator for the main element processing function
         def process_dataset_element(inputs, target_elem):
             """Memproses elemen dataset (termasuk teks) sebelum windowing."""
-            processed_text = None # Default jika teks tidak digunakan
+            processed_text = None # Default if text is not used
             if config['use_text_input']:
                 numeric_elem, text_elem = inputs
-                # Memproses teks menggunakan API TensorFlow Strings dan Lookup
+                # Process text using the corrected function
                 processed_text = process_text_for_model(text_elem, config['data']['max_text_sequence_length'], vocabulary_table)
                 processed_inputs = (numeric_elem, processed_text)
             else:
@@ -477,6 +481,7 @@ def run_pipeline(config):
                 processed_inputs = numeric_elem
 
             return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
+
 
         # Fungsi untuk membuat pipeline tf.data dengan windowing, batching, dll.
         def create_tf_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input, max_text_sequence_length, vocabulary_table, shuffle=False, batch_size=None):
@@ -899,8 +904,8 @@ def run_pipeline(config):
                 else:
                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-          # else:
-          #     logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+        #    else:
+        #       logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
 
 
         logger.info("Langkah 6 selesai.")
