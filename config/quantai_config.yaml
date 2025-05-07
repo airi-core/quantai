@@ -15,7 +15,7 @@ data:
   val_split: 0.15
   # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung)
   # PASTIKAN BAGIAN INI ADA DAN TERINDENTASI DENGAN BENAR DI BAWAH 'data:'
-  feature_cols_numeric: ['Time','Open', 'High', 'Low', 'Close', 'Volume'] # <-- PASTIKAN NAMA KOLOM INI SESUAI DENGAN HEADER CSV ANDA
+  feature_cols_numeric: ['Date','Open', 'High', 'Low', 'Close', 'Volume'] # <-- PASTIKAN NAMA KOLOM INI SESUAI DENGAN HEADER CSV ANDA
 # Konfigurasi Model
 model:
   architecture:
