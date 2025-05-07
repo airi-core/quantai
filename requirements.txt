@@ -1,12 +1,18 @@
 # requirements.txt
+tensorflow>=2.0
+pandas
+numpy
+PyYAML
+scikit-learn
+joblib
 
 # Daftar paket Python yang dibutuhkan oleh proyek quantAI
 
 # TensorFlow - untuk membangun, melatih, dan memuat model Keras
-tensorflow>=2.0
+tensorflow>=2.1
 
 # NumPy - untuk manipulasi array dan operasi numerik
-numpy>=1.20
+numpy>=1.21
 
 # Pandas - untuk pemrosesan data tabular
 pandas>=1.0
