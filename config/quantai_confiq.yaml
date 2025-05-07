@@ -1,93 +1,75 @@
-# config/project_config.yaml
+# quantai_config.yaml
 
-# --- Konfigurasi Data ---
+# Konfigurasi Global
+seed: 42
+mode: 'initial_train' # Mode operasional: 'initial_train', 'incremental_learn', 'predict_only'
+use_text_input: True # Apakah menggunakan fitur teks deskriptif
+
+# Parameter Windowing
+parameter_windowing:
+  window_size: 256 # Panjang window data historis (misal: 60 periode)
+  window_shift: 1 # Pergeseran window antar sampel (1 untuk tumpang tindih penuh)
+
+# Konfigurasi Data
 data:
-  processed_data_path: data/processed/XAU_15m_data_processed.json
-  scaler_input_path: data/processed/scalers/scaler_input.pkl
-  scaler_target_path: data/processed/scalers/scaler_target.pkl
-  window_size: 256
-  input_features: ['Open', 'High', 'Low', 'Close', 'Volume']
-  target_features: ['High', 'Low', 'Close']
-  train_split_ratio: 0.8
-  val_split_ratio: 0.1
+  # Path ke file data mentah (CSV atau JSON)
+  # Path ini relatif terhadap root repositori GitHub
+  raw_path: 'data/raw/XAU_5m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
 
-# --- Konfigurasi Model ---
+  train_split: 0.8 # Proporsi data untuk pelatihan
+  val_split: 0.1 # Proporsi data untuk validasi (sisanya untuk pengujian)
+
+  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung)
+  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA
+
+  # Parameter Pemrosesan Teks (jika use_text_input: True)
+  max_text_sequence_length: 20 # Panjang maksimum sekuens token teks setelah tokenisasi
+  # Catatan: Kosakata akan dibuat otomatis dari data pelatihan teks
+
+  # Parameter Pipeline tf.data
+  shuffle_buffer_size: 1000 # Ukuran buffer shuffle tf.data (untuk pelatihan)
+
+# Konfigurasi Arsitektur Model QuantAI
 model:
-  name: quantAI
-  type: Sequential
   architecture:
-    - class_name: LSTM
-      config:
-        units: 128
-        return_sequences: true
-        activation: tanh
-        recurrent_activation: sigmoid
-        recurrent_dropout: 0.0
-        kernel_regularizer:
-          class_name: 'l2'
-          config:
-            l2: 0.0001
-    - class_name: BatchNormalization
-    - class_name: Dropout
-      config:
-        rate: 0.236
-    - class_name: Bidirectional
-      config:
-        layer:
-          class_name: LSTM
-          config:
-            units: 64
-            return_sequences: false
-            activation: tanh
-            recurrent_activation: sigmoid
-    - class_name: BatchNormalization
-    - class_name: Dropout
-      config:
-        rate: 0.382
-    - class_name: Dense
-      config:
-        units: 32
-        activation: relu
-        kernel_regularizer:
-          class_name: 'l2'
-          config:
-            l2: 0.0001
-    - class_name: Dense
-      config:
-        units: 3
-        activation: linear
+    gru_units: 64 # Jumlah unit di layer GRU
+    dropout_rate: 0.2 # Tingkat dropout
+    use_conv1d: True # Gunakan Layer Conv1D tambahan setelah GRU?
+    conv1d_filters: 32 # Jumlah filter Conv1D
+    conv1d_kernel_size: 3 # Ukuran kernel Conv1D
+    conv1d_dilation_rate: 2 # Tingkat dilatasi Conv1D (untuk TCN-inspired)
+    embedding_dim: 32 # Dimensi vektor embedding untuk fitur teks
 
-# --- Konfigurasi Pelatihan ---
-train:
-  optimizer:
-    class_name: Adam
-    config:
-      lr: 0.01
-      # Catatan: Adam standar Keras tidak punya param 'momentum'.
-      # Jika butuh momentum, pertimbangkan optimizer lain atau implementasi kustom.
-      # beta_1: 0.9 # Default Adam
-      # beta_2: 0.999 # Default Adam
-  loss: mse # Mean Squared Error
-  metrics: ['mae', 'mse']
-  epochs: 50
-  batch_size: 32
-  # callbacks: # Contoh konfigurasi callback (opsional)
-  #   - class_name: EarlyStopping
-  #     config:
-  #       monitor: val_loss
-  #       patience: 10
-  #   - class_name: ModelCheckpoint
-  #     config:
-  #       filepath: models/checkpoints/best_model.keras
-  #       monitor: val_loss
-  #       save_best_only: true
+  # Path untuk memuat model (jika mode bukan 'initial_train')
+  # Path ini relatif terhadap root repositori GitHub
+  load_path: 'quantai_output/saved_model/quantAI_model' # <-- SESUAIKAN JIKA PERLU
 
-# --- Konfigurasi Penyimpanan Model ---
-save:
-  model_save_path: models/saved_models/quantAI_lstm_ohlcv_hlc_w256
+  # Path untuk menyimpan model terlatih (SavedModel)
+  # Path ini relatif terhadap root repositori GitHub
+  save_path: 'quantai_output/saved_model/quantAI_model' # <-- SESUAIKAN JIKA PERLU
 
-# --- Konfigurasi Prediksi ---
-predict:
-  # Tidak ada konfigurasi spesifik di sini saat ini,
-  # tapi bisa ditambahkan jika ada parameter khusus prediksi.
-  pass
+# Konfigurasi Pelatihan
+training:
+  batch_size: 32 # Ukuran batch untuk pelatihan dan evaluasi
+  epochs: 100 # Jumlah epoch untuk pelatihan awal ('initial_train')
+  incremental_epochs: 10 # Jumlah epoch untuk pelatihan inkremental ('incremental_learn')
+  learning_rate: 0.001 # Tingkat pembelajaran optimizer Adam
+
+  # Parameter Callbacks
+  early_stopping_patience: 10 # Jumlah epoch tanpa peningkatan sebelum berhenti
+  lr_reduce_factor: 0.5 # Faktor pengurangan learning rate
+  lr_reduce_patience: 5 # Jumlah epoch tanpa peningkatan sebelum LR dikurangi
+  min_lr: 0.0001 # Learning rate minimum
+
+# Konfigurasi Output
+output:
+  # Base directory untuk semua output (model, scaler, hasil)
+  # Path ini relatif terhadap root repositori GitHub
+  base_dir: 'quantai_output' # <-- SESUAIKAN JIKA PERLU
+  model_subdir: 'saved_model/quantAI_model' # Subdirektori untuk SavedModel
+  scaler_subdir: 'scalers' # Subdirektori untuk scaler
+  eval_results_file: 'evaluation_metrics/eval_results.json' # File untuk hasil evaluasi
+  predictions_file: 'predictions/predictions.csv' # File untuk prediksi
+  tensorboard_log_dir: 'logs/tensorboard' # Direktori untuk log TensorBoard
+
+  save_predictions: True # Apakah menyimpan file prediksi pada data test
