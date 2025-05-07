@@ -19,7 +19,7 @@ on:
       config_path:
         description: 'Path to the configuration file (relative to repo root)'
         required: true
-        default: 'quantai_config.yaml' # Default path ke file config
+        default: 'config/quantai_config.yaml' # Default path ke file config
 
 # Menentukan job yang akan dijalankan
 jobs:
