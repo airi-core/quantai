@@ -40,6 +40,7 @@ import joblib
 import logging
 import json # Untuk menyimpan hasil evaluasi/prediksi dalam JSON
 import argparse # Untuk membaca argumen command-line
+import re # Import modul regex untuk pembersihan string yang lebih kuat
 
 # --- Konfigurasi Global ---
 # Path ke file konfigurasi akan diberikan melalui argumen command-line
@@ -304,24 +305,33 @@ def run_pipeline(config):
         # Diagnostik: Log nama kolom dan tipe data setelah membaca CSV
         logger.info(f"Kolom setelah membaca CSV: {df.columns.tolist()}")
         logger.info(f"Tipe data setelah membaca CSV: {df.dtypes}")
+        # Diagnostik: Log beberapa nilai pertama dari kolom harga sebagai string
+        price_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in price_cols:
+            if col in df.columns and not df.empty:
+                 logger.info(f"Contoh nilai string di kolom '{col}': {df[col].astype(str).head().tolist()}")
 
 
         # Pembersihan data awal (menghapus baris dengan NaN)
         # Jangan dropna dulu, lakukan pembersihan string pada kolom harga dulu
+        # initial_rows = len(df)
         # df.dropna(inplace=True)
         # if len(df) < initial_rows:
         #     logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN.")
 
         # Pastikan kolom harga adalah numerik
-        price_cols = ['Open', 'High', 'Low', 'Close', 'Volume'] # Tambahkan Volume
+        # price_cols = ['Open', 'High', 'Low', 'Close', 'Volume'] # Sudah didefinisikan di atas
         for col in price_cols:
             if col in df.columns:
                 # PERBAIKAN: Bersihkan string dari karakter non-numerik sebelum konversi
-                # Hapus spasi di awal/akhir
-                df[col] = df[col].astype(str).str.strip()
-                # Hapus koma di akhir (jika ada)
-                df[col] = df[col].astype(str).str.rstrip(',')
-                # Argumen decimal='.' di pd.read_csv sudah menangani pemisah desimal titik
+                # Ini adalah pembersihan yang lebih kuat: Hapus semua karakter kecuali digit, titik, dan tanda minus (untuk angka negatif)
+                # Jika koma digunakan sebagai pemisah desimal, ganti titik dengan koma di regex
+                df[col] = df[col].astype(str).str.replace(r'[^\d\.\-]', '', regex=True)
+                # Jika koma digunakan sebagai pemisah desimal, dan titik sebagai pemisah ribuan,
+                # Anda mungkin perlu logika yang lebih kompleks di sini.
+                # Contoh: Mengganti titik dengan string kosong, lalu koma dengan titik
+                # df[col] = df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+
 
                 # Menggunakan Pandas to_numeric
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -344,6 +354,10 @@ def run_pipeline(config):
         # Diagnostik: Log nama kolom dan tipe data setelah pembersihan dan konversi numerik
         logger.info(f"Kolom setelah pembersihan numerik: {df.columns.tolist()}")
         logger.info(f"Tipe data setelah pembersihan numerik: {df.dtypes}")
+        # Diagnostik: Log beberapa nilai pertama dari kolom harga setelah konversi numerik
+        for col in price_cols:
+            if col in df.columns and not df.empty:
+                 logger.info(f"Contoh nilai numerik di kolom '{col}': {df[col].head().tolist()}")
 
 
         # Feature Engineering (Menggunakan Aritmatika)
@@ -362,10 +376,12 @@ def run_pipeline(config):
              df['S3'] = df['Pivot'] - 2 * (df['High'] - df['Low'])
              # Tambahkan R4/R5, S4/S5 jika perlu
              logger.info("Pivot Points dan Support/Resistance dihitung.")
+             # Tambahkan kolom indikator ke daftar kolom yang mungkin ada
+             indicator_cols = [col for col in df.columns if col.startswith('R') or col.startswith('S') or col == 'Pivot']
         else:
              logger.warning(f"Kolom yang dibutuhkan untuk Pivot Points ({required_pivot_cols}) tidak lengkap. Tidak dapat menghitung indikator.")
-             # Jika indikator tidak bisa dihitung, pastikan feature_cols_numeric tidak menyertakannya jika tidak ada
-             # Ini bisa menjadi sumber error jika feature_cols_numeric di config menyertakan indikator yang tidak ada
+             indicator_cols = [] # Kosongkan daftar indikator jika kolom dasar tidak ada
+
 
         # Menyiapkan Target (HLC Selanjutnya)
         logger.info(f"Menyiapkan target HLC selanjutnya dengan shift {config['parameter_windowing']['window_size']}...")
@@ -379,7 +395,8 @@ def run_pipeline(config):
              logger.info("Target HLC selanjutnya disiapkan.")
         else:
              logger.warning(f"Kolom yang dibutuhkan untuk target ({required_target_cols_base}) tidak lengkap. Tidak dapat menyiapkan target.")
-             # Jika target tidak bisa disiapkan, script akan berhenti di dropna target
+             target_cols = [] # Kosongkan daftar target jika kolom dasar tidak ada
+
 
         # Menghapus baris terakhir yang memiliki NaN setelah shift
         initial_rows = len(df)
@@ -422,14 +439,16 @@ def run_pipeline(config):
         # Identifikasi Fitur Input dan Target
         # Pastikan kolom indikator yang dihitung juga masuk fitur numerik
         # Hanya sertakan indikator yang benar-benar ada di DataFrame
-        indicator_cols = [col for col in df.columns if col.startswith('R') or col.startswith('S') or col == 'Pivot'] # Identifikasi ulang indikator yang ada
-        indicator_cols_present = [col for col in indicator_cols if col in df.columns]
+        indicator_cols_present = [col for col in indicator_cols if col in df.columns] # Identifikasi ulang indikator yang ada
         # Gabungkan kolom numerik dari config dengan indikator yang ada
         # Gunakan set untuk menghindari duplikat dan list comprehension untuk mempertahankan urutan (opsional)
         feature_cols_numeric_base = config['data']['feature_cols_numeric']
-        feature_cols_numeric = list(dict.fromkeys(feature_cols_numeric_base + indicator_cols_present)) # Gabungkan dan hapus duplikat
+        # Pastikan kolom base numerik dari config ada di DataFrame
+        feature_cols_numeric_base_present = [col for col in feature_cols_numeric_base if col in df.columns]
 
-        # Filter feature_cols_numeric untuk hanya menyertakan kolom yang ada di DataFrame
+        feature_cols_numeric = list(dict.fromkeys(feature_cols_numeric_base_present + indicator_cols_present)) # Gabungkan dan hapus duplikat
+
+        # Filter feature_cols_numeric untuk hanya menyertakan kolom yang ada di DataFrame (ini redundant tapi aman)
         feature_cols_numeric_present = [col for col in feature_cols_numeric if col in df.columns]
 
         # Cek apakah 'Analysis_Text' berhasil dibuat sebelum menambahkannya ke feature_cols_text
@@ -761,7 +780,14 @@ def run_pipeline(config):
             # atau buat di sini jika tidak ingin menunggu Langkah 6
             output_dir = config['output']['base_dir']
             model_save_path_full = os.path.join(output_dir, config['output']['model_subdir'])
-            tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir'])
+            scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
+            eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
+            predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
+            tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
+
+
+            # Menggunakan API TensorFlow IO GFile: makedirs
+            # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
             tf.io.gfile.makedirs(model_save_path_full)
             tf.io.gfile.makedirs(scaler_save_dir_full)
             tf.io.gfile.makedirs(os.path.dirname(eval_results_path_full)) # Pastikan dir untuk file eval
@@ -769,236 +795,99 @@ def run_pipeline(config):
             tf.io.gfile.makedirs(tensorboard_log_dir_full) # Pastikan dir untuk log TensorBoard
 
 
-            callbacks = [
-                 # Menggunakan API Keras Callbacks: EarlyStopping
-                tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=config['training']['early_stopping_patience'], restore_best_weights=True),
-                 # Menggunakan API Keras Callbacks: ModelCheckpoint
-                tf.keras.callbacks.ModelCheckpoint(filepath=model_save_path_full, monitor='val_loss', save_best_only=True, save_format='tf'), # Simpan dalam format SavedModel
-                 # Menggunakan API Keras Callbacks: ReduceLROnPlateau (Menggunakan Aritmatika)
-                tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=config['training']['lr_reduce_factor'], patience=config['training']['lr_reduce_patience'], min_lr=config['training']['min_lr']),
-                 # Menggunakan API Keras Callbacks: TensorBoard
-                tf.keras.callbacks.TensorBoard(log_dir=tensorboard_log_dir_full)
-            ]
-
-            epochs_to_run = config['training']['epochs'] if config['mode'] == 'initial_train' else config['training']['incremental_epochs']
-
-            logger.info(f"Melatih selama {epochs_to_run} epoch.")
-            history = model.fit(
-                dataset_train,
-                epochs=epochs_to_run,
-                validation_data=dataset_val,
-                callbacks=callbacks
-            )
-            logger.info("Pelatihan selesai.")
-
-            # Muat kembali model terbaik setelah pelatihan selesai (ModelCheckpoint menyimpannya)
-            # Ini penting jika EarlyStopping menghentikan pelatihan sebelum epoch terakhir
-            logger.info(f"Memuat model terbaik dari {model_save_path_full}")
-             # Menggunakan API Keras Models: load_model
-            # custom_objects mungkin diperlukan di sini jika model menggunakan komponen kustom
-            try:
-                model = tf.keras.models.load_model(model_save_path_full)
-                logger.info("Model terbaik berhasil dimuat.")
-            except Exception as e:
-                 logger.warning(f"Gagal memuat model terbaik setelah pelatihan dari {model_save_path_full}: {e}. Menggunakan model akhir dari fit().")
-                 # Jika gagal memuat model terbaik, gunakan model yang ada setelah fit()
-
-
-            # --- Fondasi Belajar Mandiri/Hybrid/Otonom (Loop Kustom Opsional) ---
-            # Jika diperlukan logika update bobot yang lebih granular dari model.fit,
-            # implementasikan loop kustom di sini menggunakan:
-            # @tf.function
-            # tf.GradientTape
-            # optimizer.apply_gradients
-            # model.trainable_variables
-            # tf.cond, tf.while_loop (untuk logika otonom dalam grafik)
-            # tf.py_function (untuk logika otonom di Python)
-            # train_on_batch (untuk update per batch dalam loop Python)
-            # Contoh (pseudocode):
-            # @tf.function
-            # def custom_train_step(inputs, targets):
-            #     with tf.GradientTape() as tape:
-            #         predictions = model(inputs, training=True)
-            #         loss = model.compiled_loss(targets, predictions) # Menggunakan loss yang dikompilasi
-            #         # Tambahkan loss kustom jika ada: loss += sum(model.losses)
-            #     gradients = tape.gradient(loss, model.trainable_variables)
-            #     model.optimizer.apply_gradients(zip(gradients, model.trainable_variables)) # Menggunakan optimizer yang dikompilasi
-            #     # Update metrik kompilasi jika ada: model.compiled_metrics.update_state(targets, predictions)
-            #     return loss
-            #
-            # if config['mode'] == 'incremental_learn_custom': # Mode kustom baru
-            #     logger.info("Memulai pelatihan inkremental dengan loop kustom.")
-            #     # Pastikan dataset_new_data disiapkan di Langkah 2
-            #     if 'dataset_new_data' in locals():
-            #         for epoch in range(config['training']['incremental_epochs_custom']):
-            #             logger.info(f"Epoch inkremental kustom {epoch+1}/{config['training']['incremental_epochs_custom']}")
-            #             # Reset metrik jika menggunakan metrik kompilasi
-            #             # for metric in model.metrics: metric.reset_states()
-            #             for batch_inputs, batch_targets in dataset_new_data:
-            #                 batch_loss = custom_train_step(batch_inputs, batch_targets)
-            #                 # Logika otonom: if batch_loss < threshold: ...
-            #                 # Log loss atau metrik batch
-            #             # Log metrik epoch jika menggunakan metrik kompilasi
-            #             # eval_on_val_set() # Evaluasi pada set validasi secara berkala
-            #         logger.info("Pelatihan inkremental kustom selesai.")
-            #     else:
-            #          logger.warning("Dataset data baru tidak tersedia untuk pelatihan inkremental kustom.")
-
-
-        except Exception as e:
-            logger.error(f"Error selama Langkah 4: {e}")
-            # Lanjutkan ke langkah berikutnya meskipun ada error pelatihan,
-            # mungkin kita masih ingin menyimpan model yang dimuat atau melakukan prediksi.
-
-
-    # --- Langkah 5: Evaluation Model Akhir ---
-    eval_results = None
-    # Hanya lakukan evaluasi jika mode bukan 'predict_only'
-    if config['mode'] in ['initial_train', 'incremental_learn']:
-        logger.info("Langkah 5: Mengevaluasi model akhir...")
-        try:
-            # Menggunakan API Keras Model: evaluate
-            # Menggunakan Aritmatika di dalam metrik
-            # Pastikan model dikompilasi jika mode incremental_learn dan dimuat dengan tf.saved_model.load tanpa compile
-            if not hasattr(model, 'evaluate') and hasattr(model, 'compile'):
-                 logger.warning("Model tidak memiliki metode evaluate, mencoba mengkompilasi sebelum evaluasi.")
-                 # Menggunakan API Keras Optimizers
-                 optimizer = tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate'])
-                 # Menggunakan API Keras Losses
-                 loss_fn = tf.keras.losses.MeanAbsoluteError()
-                 # Menggunakan API Keras Metrics
-                 metrics = [tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsoluteError()]
-                 model.compile(optimizer=optimizer, loss=loss_fn, metrics=metrics)
-                 logger.info("Model berhasil dikompilasi ulang untuk evaluasi.")
-
-
-            if hasattr(model, 'evaluate') and 'dataset_test' in locals():
-                eval_results = model.evaluate(dataset_test)
-                logger.info(f"Hasil Evaluasi Akhir: {dict(zip(model.metrics_names, eval_results))}")
-            elif 'dataset_test' not in locals():
-                 logger.warning("Dataset test tidak tersedia. Tidak dapat melakukan evaluasi.")
-            else:
-                 logger.error("Model tidak memiliki metode evaluate setelah mencoba kompilasi. Tidak dapat melakukan evaluasi.")
-
-
-        except Exception as e:
-            logger.error(f"Error selama Langkah 5: {e}")
-            # Lanjutkan ke langkah berikutnya meskipun ada error evaluasi
-
-    # --- Langkah 6: Penyimpanan Aset & Hasil (Menulis) ---
-    logger.info("Langkah 6: Menyimpan aset dan hasil...")
-    try:
-        # Pastikan direktori output ada (Menggunakan API TensorFlow IO GFile)
-        output_dir = config['output']['base_dir']
-        model_save_path_full = os.path.join(output_dir, config['output']['model_subdir'])
-        scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
-        eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
-        predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
-        tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
-
-
-        # Menggunakan API TensorFlow IO GFile: makedirs
-        # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
-        tf.io.gfile.makedirs(model_save_path_full)
-        tf.io.gfile.makedirs(scaler_save_dir_full)
-        tf.io.gfile.makedirs(os.path.dirname(eval_results_path_full)) # Pastikan dir untuk file eval
-        tf.io.gfile.makedirs(os.path.dirname(predictions_path_full)) # Pastikan dir untuk file prediksi
-        tf.io.gfile.makedirs(tensorboard_log_dir_full) # Pastikan dir untuk log TensorBoard
-
-
-        if config['mode'] in ['initial_train', 'incremental_learn']:
-            # Menyimpan Model Terlatih (Hasil Pelatihan, Jalan Offline/Deploy Anywhere)
-            logger.info(f"Menyimpan model terlatih ke {model_save_path_full}...")
-             # Menggunakan API TensorFlow SavedModel: save
-            # Jika model dimuat dengan tf.saved_model.load, mungkin perlu dikonversi ke Keras Model dulu
-            # atau pastikan objek yang dimuat memang bisa disimpan sebagai SavedModel
-            if isinstance(model, tf.keras.Model):
-                 tf.saved_model.save(model, model_save_path_full)
-                 logger.info("Model SavedModel berhasil disimpan.")
-            else:
-                 logger.warning("Objek model bukan tf.keras.Model. Tidak dapat menyimpan dalam format SavedModel standar.")
-
-
-            # Menyimpan Scaler (Pendukung Offline/Deploy Anywhere)
-            logger.info(f"Menyimpan scaler ke {scaler_save_dir_full}...")
-             # Menggunakan Joblib: dump
-            # Pastikan scaler_input dan scaler_target tersedia (dilatih di Langkah 2)
-            if 'scaler_input' in locals() and 'scaler_target' in locals():
-                 joblib.dump(scaler_input, os.path.join(scaler_save_dir_full, 'scaler_input.pkl'))
-                 joblib.dump(scaler_target, os.path.join(scaler_save_dir_full, 'scaler_target.pkl'))
-                 logger.info("Scaler berhasil disimpan.")
-            else:
-                 logger.warning("Scaler tidak tersedia. Tidak dapat menyimpan scaler.")
-
-
-            # Menyimpan Hasil Evaluasi (Hasil Output)
-            if eval_results is not None:
-                logger.info(f"Menyimpan hasil evaluasi ke {eval_results_path_full}...")
-                # Pastikan model.metrics_names tersedia jika eval_results bukan None
-                if hasattr(model, 'metrics_names'):
-                    eval_dict = dict(zip(model.metrics_names, eval_results))
-                    # Menggunakan Python Standard Library: open dan json.dump (Menulis)
-                    with open(eval_results_path_full, 'w') as f:
-                        json.dump(eval_dict, f, indent=4)
-                    logger.info("Hasil evaluasi berhasil disimpan.")
+            if config['mode'] in ['initial_train', 'incremental_learn']:
+                # Menyimpan Model Terlatih (Hasil Pelatihan, Jalan Offline/Deploy Anywhere)
+                logger.info(f"Menyimpan model terlatih ke {model_save_path_full}...")
+                 # Menggunakan API TensorFlow SavedModel: save
+                # Jika model dimuat dengan tf.saved_model.load, mungkin perlu dikonversi ke Keras Model dulu
+                # atau pastikan objek yang dimuat memang bisa disimpan sebagai SavedModel
+                if isinstance(model, tf.keras.Model):
+                     tf.saved_model.save(model, model_save_path_full)
+                     logger.info("Model SavedModel berhasil disimpan.")
                 else:
-                     logger.warning("Nama metrik model tidak tersedia. Tidak dapat menyimpan hasil evaluasi dalam format dictionary.")
+                     logger.warning("Objek model bukan tf.keras.Model. Tidak dapat menyimpan dalam format SavedModel standar.")
 
 
-        # Menyimpan Prediksi (Hasil Output, Opsional untuk semua mode)
-        # Hanya simpan prediksi jika mode bukan 'initial_train' atau 'incremental_learn' DAN save_predictions True
-        # ATAU jika mode adalah 'predict_only' dan save_predictions True
-        if config['output'].get('save_predictions', False) and model is not None:
-             # Tentukan dataset mana yang akan diprediksi berdasarkan mode
-             dataset_to_predict = None
-             if config['mode'] == 'predict_only':
-                 # Dalam mode predict_only, asumsikan dataset_test_raw adalah data yang akan diprediksi
-                 # Perlu membuat pipeline predict_only dari dataset_test_raw
-                 # Ini memerlukan sedikit penyesuaian di Langkah 2 untuk menyiapkan dataset_test_raw
-                 # atau membuat dataset_predict_only_raw secara terpisah
-                 # Untuk kesederhanaan saat ini, kita asumsikan dataset_test sudah siap untuk diprediksi
-                 if 'dataset_test' in locals():
-                     dataset_to_predict = dataset_test
-                     logger.info("Membuat prediksi pada dataset test (mode predict_only).")
-                 else:
-                      logger.warning("Dataset test tidak tersedia untuk prediksi dalam mode predict_only.")
-
-             elif config['mode'] in ['initial_train', 'incremental_learn']:
-                 # Dalam mode training, prediksi biasanya dilakukan pada dataset test
-                 if 'dataset_test' in locals():
-                     dataset_to_predict = dataset_test
-                     logger.info("Membuat prediksi pada dataset test (mode training).")
-                 else:
-                     logger.warning("Dataset test tidak tersedia untuk prediksi setelah pelatihan.")
-
-             if dataset_to_predict is not None:
-                logger.info(f"Membuat dan menyimpan prediksi ke {predictions_path_full}...")
-                # Menggunakan API Keras Model: predict
-                # Menggunakan Aritmatika di dalam scaler inverse_transform
-                predictions_scaled = model.predict(dataset_to_predict)
-
-                # Pastikan scaler_target tersedia untuk inverse transform
-                if 'scaler_target' in locals():
-                    predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
-
-                    # Membuat DataFrame hasil prediksi
-                    df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols_present]) # Gunakan kolom target yang benar-benar ada
-
-                    # Opsi: Gabungkan dengan data test asli (membutuhkan penanganan indeks)
-                    # Ini bisa rumit dengan windowing. Cara paling aman adalah menyimpan prediksi saja
-                    # atau menggabungkan data asli dan prediksi di luar pipeline ini.
-
-                    # Menggunakan Pandas to_csv o r to_json (Menulis)
-                    df_predictions.to_csv(predictions_path_full, index=False)
-                    logger.info("Prediksi berhasil disimpan.")
+                # Menyimpan Scaler (Pendukung Offline/Deploy Anywhere)
+                logger.info(f"Menyimpan scaler ke {scaler_save_dir_full}...")
+                 # Menggunakan Joblib: dump
+                # Pastikan scaler_input dan scaler_target tersedia (dilatih di Langkah 2)
+                if 'scaler_input' in locals() and 'scaler_target' in locals():
+                     joblib.dump(scaler_input, os.path.join(scaler_save_dir_full, 'scaler_input.pkl'))
+                     joblib.dump(scaler_target, os.path.join(scaler_save_dir_full, 'scaler_target.pkl'))
+                     logger.info("Scaler berhasil disimpan.")
                 else:
-                     logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
-
-          #  else:
-          #       logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+                     logger.warning("Scaler tidak tersedia. Tidak dapat menyimpan scaler.")
 
 
-        logger.info("Langkah 6 selesai.")
+                # Menyimpan Hasil Evaluasi (Hasil Output)
+                if eval_results is not None:
+                    logger.info(f"Menyimpan hasil evaluasi ke {eval_results_path_full}...")
+                    # Pastikan model.metrics_names tersedia jika eval_results bukan None
+                    if hasattr(model, 'metrics_names'):
+                        eval_dict = dict(zip(model.metrics_names, eval_results))
+                        # Menggunakan Python Standard Library: open dan json.dump (Menulis)
+                        with open(eval_results_path_full, 'w') as f:
+                            json.dump(eval_dict, f, indent=4)
+                        logger.info("Hasil evaluasi berhasil disimpan.")
+                    else:
+                         logger.warning("Nama metrik model tidak tersedia. Tidak dapat menyimpan hasil evaluasi dalam format dictionary.")
+
+
+            # Menyimpan Prediksi (Hasil Output, Opsional untuk semua mode)
+            # Hanya simpan prediksi jika mode bukan 'initial_train' atau 'incremental_learn' DAN save_predictions True
+            # ATAU jika mode adalah 'predict_only' dan save_predictions True
+            if config['output'].get('save_predictions', False) and model is not None:
+                 # Tentukan dataset mana yang akan diprediksi berdasarkan mode
+                 dataset_to_predict = None
+                 if config['mode'] == 'predict_only':
+                     # Dalam mode predict_only, asumsikan dataset_test_raw adalah data yang akan diprediksi
+                     # Perlu membuat pipeline predict_only dari dataset_test_raw
+                     # Ini memerlukan sedikit penyesuaian di Langkah 2 untuk menyiapkan dataset_test_raw
+                     # atau membuat dataset_predict_only_raw secara terpisah
+                     # Untuk kesederhanaan saat ini, kita asumsikan dataset_test sudah siap untuk diprediksi
+                     if 'dataset_test' in locals():
+                         dataset_to_predict = dataset_test
+                         logger.info("Membuat prediksi pada dataset test (mode predict_only).")
+                     else:
+                          logger.warning("Dataset test tidak tersedia untuk prediksi dalam mode predict_only.")
+
+                 elif config['mode'] in ['initial_train', 'incremental_learn']:
+                     # Dalam mode training, prediksi biasanya dilakukan pada dataset test
+                     if 'dataset_test' in locals():
+                         dataset_to_predict = dataset_test
+                         logger.info("Membuat prediksi pada dataset test (mode training).")
+                     else:
+                         logger.warning("Dataset test tidak tersedia untuk prediksi setelah pelatihan.")
+
+                 if dataset_to_predict is not None:
+                    logger.info(f"Membuat dan menyimpan prediksi ke {predictions_path_full}...")
+                    # Menggunakan API Keras Model: predict
+                    # Menggunakan Aritmatika di dalam scaler inverse_transform
+                    predictions_scaled = model.predict(dataset_to_predict)
+
+                    # Pastikan scaler_target tersedia untuk inverse transform
+                    if 'scaler_target' in locals():
+                        predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
+
+                        # Membuat DataFrame hasil prediksi
+                        df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols_present]) # Gunakan kolom target yang benar-benar ada
+
+                        # Opsi: Gabungkan dengan data test asli (membutuhkan penanganan indeks)
+                        # Ini bisa rumit dengan windowing. Cara paling aman adalah menyimpan prediksi saja
+                        # atau menggabungkan data asli dan prediksi di luar pipeline ini.
+
+                        # Menggunakan Pandas to_csv o r to_json (Menulis)
+                        df_predictions.to_csv(predictions_path_full, index=False)
+                        logger.info("Prediksi berhasil disimpan.")
+                    else:
+                         logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
+
+               # else:
+               #     logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+
+
+            logger.info("Langkah 6 selesai.")
 
     except Exception as e:
         logger.error(f"Error selama Langkah 6: {e}")
