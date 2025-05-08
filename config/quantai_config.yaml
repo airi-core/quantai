@@ -1,79 +1,128 @@
-# quantai_config.yaml
+# config/quantai_config.yaml
 
-# Konfigurasi Global
+# Konfigurasi Global Pipeline QuantAI
+
+# Seed untuk reproduksibilitas (NumPy dan TensorFlow)
 seed: 42
-mode: 'initial_train' # Mode operasional: 'initial_train', 'incremental_learn', 'predict_only'
-use_text_input: True # Apakah menggunakan fitur teks deskriptif
 
-# Parameter Windowing
+# Mode operasional pipeline:
+# 'initial_train': Latih model baru dari awal.
+# 'incremental_learn': Muat model yang sudah ada dan lanjutkan pelatihan.
+# 'predict_only': Muat model yang sudah ada dan lakukan prediksi pada data test/baru.
+mode: 'initial_train'
+
+# Apakah fitur teks deskriptif akan digunakan sebagai input model?
+use_text_input: True
+
+# Parameter Konfigurasi untuk Windowing Data Deret Waktu
 parameter_windowing:
-  window_size: 60 # Panjang window data historis (misal: 60 periode)
-  window_shift: 1 # Pergeseran window antar sampel (1 untuk tumpang tindih penuh)
+  window_size: 60 # Jumlah periode waktu (misal: candle) dalam satu window input historis.
+  window_shift: 1 # Pergeseran (dalam periode waktu) antar awal window berurutan. (1 = setiap candle baru memulai window baru).
 
-# Konfigurasi Data
+# Konfigurasi Data Input dan Preprocessing
 data:
-  # Path ke file data mentah (CSV atau JSON)
-  # Path ini relatif terhadap root repositori GitHub
-  raw_path: 'data/raw/XAU_15m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
+  # Path ke file data mentah (CSV atau JSON). Path ini relatif terhadap root repositori GitHub
+  # tempat workflow GitHub Actions dijalankan. SESUAIKAN PATH INI JIKA LOKASI FILE BERBEDA.
+  raw_path: 'data/raw/XAU_15m_data.csv'
 
-  train_split: 0.8 # Proporsi data untuk pelatihan
-  val_split: 0.1 # Proporsi data untuk validasi (sisanya untuk pengujian)
+  # Nama kolom yang berisi informasi tanggal/waktu di data mentah.
+  # Digunakan untuk pengurutan dan alignment prediksi.
+  date_column: 'Date' # SESUAIKAN JIKA NAMA KOLOM TANGGAL ANDA BERBEDA
 
-  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung seperti Pivot)
-  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA. Jangan masukkan 'Date'.
+  # Apakah menyertakan kolom tanggal dalam pengecekan baris NaN awal.
+  # Set ke True jika baris tanpa tanggal juga harus dihapus.
+  include_date_in_nan_check: False # Set True jika perlu
+
+  # Proporsi pembagian data untuk pelatihan, validasi, dan pengujian (total <= 1.0).
+  # Pembagian dilakukan secara kronologis (data awal untuk train, tengah untuk val, akhir untuk test).
+  train_split: 0.8
+  val_split: 0.1
+  # Sisa proporsi (1.0 - train_split - val_split) otomatis menjadi test set.
+
+  # Kolom fitur numerik yang akan diambil langsung dari data mentah (setelah preprocessing dasar,
+  # sebelum feature engineering indikator). Jangan masukkan kolom tanggal di sini.
+  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA
 
   # Parameter Pemrosesan Teks (jika use_text_input: True)
-  max_text_sequence_length: 20 # Panjang maksimum sekuens token teks setelah tokenisasi
-  # Catatan: Kosakata akan dibuat otomatis dari data pelatihan teks
+  # Panjang maksimum sekuens token teks setelah tokenisasi per periode dalam window.
+  # Teks akan di-pad atau dipotong ke panjang ini.
+  max_text_sequence_length: 20
 
-  # Parameter Pipeline tf.data
-  shuffle_buffer_size: 1000 # Ukuran buffer shuffle tf.data (untuk pelatihan)
+  # Parameter Pipeline tf.data untuk performa.
+  # Ukuran buffer untuk mengocok (shuffle) data pelatihan. Nilai yang lebih besar = pengocokan lebih baik
+  # (mendekati acak sempurna) tetapi menggunakan lebih banyak memori.
+  shuffle_buffer_size: 1000
+
 
 # Konfigurasi Arsitektur Model QuantAI
 model:
   architecture:
-    gru_units: 64 # Jumlah unit di layer GRU
-    dropout_rate: 0.2 # Tingkat dropout
-    use_conv1d: True # Gunakan Layer Conv1D tambahan setelah GRU?
-    conv1d_filters: 32 # Jumlah filter Conv1D
-    conv1d_kernel_size: 3 # Ukuran kernel Conv1D
-    conv1d_dilation_rate: 2 # Tingkat dilatasi Conv1D (untuk TCN-inspired)
-    embedding_dim: 32 # Dimensi vektor embedding untuk fitur teks
+    # Jumlah unit (neuron) di layer GRU.
+    gru_units: 64
+    # Tingkat dropout untuk regularisasi (mencegah overfitting).
+    dropout_rate: 0.2
+    # Apakah menggunakan Layer Konvolusional 1D (Conv1D) tambahan setelah GRU.
+    use_conv1d: True
+    # Jumlah filter di Layer Conv1D (jika use_conv1d: True).
+    conv1d_filters: 32
+    # Ukuran kernel (lebar filter) di Layer Conv1D (jika use_conv1d: True).
+    conv1d_kernel_size: 3
+    # Tingkat dilatasi di Layer Conv1D (jika use_conv1d: True), untuk menangkap pola yang lebih luas (TCN-inspired).
+    conv1d_dilation_rate: 2
+    # Dimensi vektor embedding untuk merepresentasikan token teks (jika use_text_input: True).
+    embedding_dim: 32
 
-  # Path untuk memuat model (jika mode bukan 'initial_train')
-  # Path ini harus mengarah ke file .h5 yang disimpan sebelumnya
-  # Path ini relatif terhadap lokasi eksekusi script (atau root repositori di Actions)
-  load_path: 'quantai_output/saved_model/best_model.h5' # <-- SESUAIKAN JIKA PERLU. Ganti nama file jika disimpan dengan nama lain.
+  # Path untuk memuat model yang sudah ada (jika mode 'incremental_learn' atau 'predict_only').
+  # PATH INI HARUS MENGARAH KE FILE .h5 YANG TELAH DISIMPAN SEBELUMNYA.
+  # Path ini relatif terhadap lokasi eksekusi script (atau root repositori di Actions).
+  load_path: 'quantai_output/saved_model/best_model.h5' # <-- SESUAIKAN PATH DAN NAMA FILE JIKA BERBEDA
 
-# Konfigurasi Pelatihan
+# Konfigurasi Pelatihan Model
 training:
-  batch_size: 32 # Ukuran batch untuk pelatihan dan evaluasi
-  epochs: 50 # Jumlah epoch untuk pelatihan awal ('initial_train')
-  incremental_epochs: 5 # Jumlah epoch untuk pelatihan inkremental ('incremental_learn')
-  learning_rate: 0.001 # Tingkat pembelajaran optimizer Adam
+  # Ukuran batch untuk pelatihan, validasi, dan pengujian/prediksi.
+  batch_size: 32
+  # Jumlah epoch untuk pelatihan awal ('initial_train').
+  epochs: 100
+  # Jumlah epoch untuk pelatihan inkremental ('incremental_learn').
+  incremental_epochs: 10
+  # Tingkat pembelajaran awal untuk optimizer (misal: Adam).
+  learning_rate: 0.001
 
-  # Parameter Callbacks
-  early_stopping_patience: 10 # Jumlah epoch tanpa peningkatan sebelum berhenti
-  lr_reduce_factor: 0.5 # Faktor pengurangan learning rate
-  lr_reduce_patience: 5 # Jumlah epoch tanpa peningkatan sebelum LR dikurangi
-  min_lr: 0.0001 # Learning rate minimum
+  # Parameter untuk Keras Callbacks (untuk mengontrol proses pelatihan).
+  # EarlyStopping: Menghentikan pelatihan jika metrik validasi tidak membaik selama 'patience' epoch.
+  early_stopping_patience: 10
+  # ReduceLROnPlateau: Mengurangi learning rate jika metrik validasi stagnan.
+  lr_reduce_factor: 0.5
+  lr_reduce_patience: 5
+  min_lr: 0.0001 # Learning rate minimum setelah pengurangan.
 
-# Konfigurasi Output
+# Konfigurasi Output Pipeline (Hasil Pelatihan, Scaler, Prediksi, Log)
 output:
-  # Base directory untuk semua output (model, scaler, hasil)
-  # Path ini relatif terhadap root repositori GitHub
-  base_dir: 'quantai_output' # <-- SESUAIKAN JIKA PERLU
+  # Base directory tempat semua output akan disimpan. Path ini relatif terhadap
+  # root repositori GitHub tempat workflow Actions dijalankan.
+  base_dir: 'quantai_output' # <-- SESUAIKAN PATH INI JIKA BERBEDA
 
-  # Path untuk menyimpan model terlatih (.h5)
-  # Path ini relatif terhadap root repositori GitHub
-  # ModelCheckpoint akan menyimpan di sini.
-  model_save_file: 'quantai_output/saved_model/best_model.h5' # <-- SESUAIKAN NAMA FILE JIKA PERLU
+  # Path untuk menyimpan model terlatih (.h5).
+  # Model terbaik selama pelatihan (berdasarkan metrik validasi) akan disimpan di sini oleh ModelCheckpoint.
+  # Path ini relatif terhadap 'base_dir'.
+  # CONTOH: jika base_dir='quantai_output' dan model_save_file='saved_model/best_model.h5',
+  # maka model akan disimpan di 'quantai_output/saved_model/best_model.h5'.
+  model_save_file: 'saved_model/best_model.h5' # <-- SESUAIKAN NAMA FILE/SUBDIR JIKA PERLU
 
-  scaler_subdir: 'scalers' # Subdirektori untuk scaler (scaler_input.pkl, scaler_target.pkl)
-  # vocabulary_file: 'scalers/vocabulary.txt' # Opsional: Path untuk menyimpan file kosakata teks jika use_text_input=True. Default di code jika tidak ada.
+  # Subdirektori di dalam 'base_dir' untuk menyimpan objek scaler (MinMaxScaler).
+  scaler_subdir: 'scalers'
+  # Path file di dalam 'base_dir' untuk menyimpan kosakata teks (jika use_text_input: True).
+  # Default jika tidak ditentukan adalah 'scalers/vocabulary.txt'.
+  # vocabulary_file: 'scalers/vocabulary.txt' # Opsional, bisa dikonfigurasi jika perlu
 
-  eval_results_file: 'evaluation_metrics/eval_results.json' # File untuk hasil evaluasi
-  predictions_file: 'predictions/predictions.csv' # File untuk prediksi
-  tensorboard_log_dir: 'logs/tensorboard' # Direktori untuk log TensorBoard
+  # Path file di dalam 'base_dir' untuk menyimpan hasil evaluasi akhir (dalam format JSON).
+  eval_results_file: 'evaluation_metrics/eval_results.json'
+  # Path file di dalam 'base_dir' untuk menyimpan hasil prediksi (dalam format CSV),
+  # termasuk kolom 'Date' yang selaras.
+  predictions_file: 'predictions/predictions.csv'
 
-  save_predictions: True # Apakah menyimpan file prediksi pada data test
+  # Apakah akan menyimpan file prediksi setelah pipeline selesai (True/False).
+  save_predictions: True
+
+  # Subdirektori di dalam 'base_dir' untuk log TensorBoard.
+  tensorboard_log_dir: 'logs/tensorboard'
