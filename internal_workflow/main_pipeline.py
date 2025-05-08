@@ -668,19 +668,18 @@ def run_pipeline(config):
             if dataset_raw is None:
                  return None # Cannot create window dataset from None
 
-            dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
             def process_window(window_tuple):
-    # Window sekarang diketahui sebagai tuple
-    # Ekstrak elemen dataset dari tuple jika diperlukan
-            window_data = window_tuple[0] if isinstance(window_tuple, tuple) else window_tuple
+    # Ekstraksi elemen dataset
+           window_data = window_tuple[0] if isinstance(window_tuple, tuple) else window_tuple
     
-    # Pastikan window_data memiliki metode batch
-            if hasattr(window_data, 'batch'):
-            return window_data.batch(window_size)
+    # Proses window dengan metode batch
+               if hasattr(window_data, 'batch'):
+              return window_data.batch(window_size)
             else:
-        # Alternatif pemrosesan jika batch tidak tersedia
+        # Alternatif jika metode batch tidak tersedia
             return tf.data.Dataset.from_tensors(window_data)
 
+# Implementasi pada pipeline data
             dataset_flattened = dataset_windowed.flat_map(process_window)
 
             # Apply the processing function to each window
