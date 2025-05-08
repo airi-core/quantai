@@ -1,32 +1,79 @@
+# quantai_config.yaml
+
 # Konfigurasi Global
 seed: 42
-mode: 'initial_train'
-use_text_input: False  # Nonaktifkan input teks untuk menyederhanakan
+mode: 'initial_train' # Mode operasional: 'initial_train', 'incremental_learn', 'predict_only'
+use_text_input: True # Apakah menggunakan fitur teks deskriptif
 
 # Parameter Windowing
 parameter_windowing:
-  window_size: 30  # Lebih kecil
-  window_shift: 3  # Lebih besar untuk mengurangi redundansi
+  window_size: 60 # Panjang window data historis (misal: 60 periode)
+  window_shift: 1 # Pergeseran window antar sampel (1 untuk tumpang tindih penuh)
 
 # Konfigurasi Data
 data:
-  raw_path: './data/raw/XAU_15m_data.csv'  # Gunakan path relatif dengan ./
-  train_split: 0.7  # Lebih banyak data untuk testing
-  val_split: 0.15
-  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung)
-  # PASTIKAN BAGIAN INI ADA DAN TERINDENTASI DENGAN BENAR DI BAWAH 'data:'
-  feature_cols_numeric: ['Date','Open', 'High', 'Low', 'Close', 'Volume'] # <-- PASTIKAN NAMA KOLOM INI SESUAI DENGAN HEADER CSV ANDA
-# Konfigurasi Model
+  # Path ke file data mentah (CSV atau JSON)
+  # Path ini relatif terhadap root repositori GitHub
+  raw_path: 'data/raw/XAU_15m_data.csv' # <-- SESUAIKAN PATH INI DI REPO ANDA
+
+  train_split: 0.8 # Proporsi data untuk pelatihan
+  val_split: 0.1 # Proporsi data untuk validasi (sisanya untuk pengujian)
+
+  # Kolom fitur numerik dari data mentah (tidak termasuk indikator yang dihitung seperti Pivot)
+  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA. Jangan masukkan 'Date'.
+
+  # Parameter Pemrosesan Teks (jika use_text_input: True)
+  max_text_sequence_length: 20 # Panjang maksimum sekuens token teks setelah tokenisasi
+  # Catatan: Kosakata akan dibuat otomatis dari data pelatihan teks
+
+  # Parameter Pipeline tf.data
+  shuffle_buffer_size: 1000 # Ukuran buffer shuffle tf.data (untuk pelatihan)
+
+# Konfigurasi Arsitektur Model QuantAI
 model:
   architecture:
-    gru_units: 32  # Lebih sederhana
-    dropout_rate: 0.3  # Lebih tinggi untuk mencegah overfitting
-    use_conv1d: False  # Nonaktifkan untuk menyederhanakan
-    embedding_dim: 16  # Lebih kecil
+    gru_units: 64 # Jumlah unit di layer GRU
+    dropout_rate: 0.2 # Tingkat dropout
+    use_conv1d: True # Gunakan Layer Conv1D tambahan setelah GRU?
+    conv1d_filters: 32 # Jumlah filter Conv1D
+    conv1d_kernel_size: 3 # Ukuran kernel Conv1D
+    conv1d_dilation_rate: 2 # Tingkat dilatasi Conv1D (untuk TCN-inspired)
+    embedding_dim: 32 # Dimensi vektor embedding untuk fitur teks
+
+  # Path untuk memuat model (jika mode bukan 'initial_train')
+  # Path ini harus mengarah ke file .h5 yang disimpan sebelumnya
+  # Path ini relatif terhadap lokasi eksekusi script (atau root repositori di Actions)
+  load_path: 'quantai_output/saved_model/best_model.h5' # <-- SESUAIKAN JIKA PERLU. Ganti nama file jika disimpan dengan nama lain.
 
 # Konfigurasi Pelatihan
 training:
-  batch_size: 64  # Lebih besar untuk training yang lebih stabil
-  epochs: 50  # Lebih sedikit epoch
-  learning_rate: 0.0005  # Lebih kecil
-  early_stopping_patience: 5  # Lebih cepat berhenti
+  batch_size: 32 # Ukuran batch untuk pelatihan dan evaluasi
+  epochs: 50 # Jumlah epoch untuk pelatihan awal ('initial_train')
+  incremental_epochs: 5 # Jumlah epoch untuk pelatihan inkremental ('incremental_learn')
+  learning_rate: 0.001 # Tingkat pembelajaran optimizer Adam
+
+  # Parameter Callbacks
+  early_stopping_patience: 10 # Jumlah epoch tanpa peningkatan sebelum berhenti
+  lr_reduce_factor: 0.5 # Faktor pengurangan learning rate
+  lr_reduce_patience: 5 # Jumlah epoch tanpa peningkatan sebelum LR dikurangi
+  min_lr: 0.0001 # Learning rate minimum
+
+# Konfigurasi Output
+output:
+  # Base directory untuk semua output (model, scaler, hasil)
+  # Path ini relatif terhadap root repositori GitHub
+  base_dir: 'quantai_output' # <-- SESUAIKAN JIKA PERLU
+
+  # Path untuk menyimpan model terlatih (.h5)
+  # Path ini relatif terhadap root repositori GitHub
+  # ModelCheckpoint akan menyimpan di sini.
+  model_save_file: 'quantai_output/saved_model/best_model.h5' # <-- SESUAIKAN NAMA FILE JIKA PERLU
+
+  scaler_subdir: 'scalers' # Subdirektori untuk scaler (scaler_input.pkl, scaler_target.pkl)
+  # vocabulary_file: 'scalers/vocabulary.txt' # Opsional: Path untuk menyimpan file kosakata teks jika use_text_input=True. Default di code jika tidak ada.
+
+  eval_results_file: 'evaluation_metrics/eval_results.json' # File untuk hasil evaluasi
+  predictions_file: 'predictions/predictions.csv' # File untuk prediksi
+  tensorboard_log_dir: 'logs/tensorboard' # Direktori untuk log TensorBoard
+
+  save_predictions: True # Apakah menyimpan file prediksi pada data test
