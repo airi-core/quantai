@@ -672,16 +672,16 @@ def run_pipeline(config):
             def process_window(window_tuple):
     # Window sekarang diketahui sebagai tuple
     # Ekstrak elemen dataset dari tuple jika diperlukan
-    window_data = window_tuple[0] if isinstance(window_tuple, tuple) else window_tuple
+            window_data = window_tuple[0] if isinstance(window_tuple, tuple) else window_tuple
     
     # Pastikan window_data memiliki metode batch
-    if hasattr(window_data, 'batch'):
-        return window_data.batch(window_size)
-    else:
+            if hasattr(window_data, 'batch'):
+            return window_data.batch(window_size)
+            else:
         # Alternatif pemrosesan jika batch tidak tersedia
-        return tf.data.Dataset.from_tensors(window_data)
+            return tf.data.Dataset.from_tensors(window_data)
 
-dataset_flattened = dataset_windowed.flat_map(process_window)
+            dataset_flattened = dataset_windowed.flat_map(process_window)
 
             # Apply the processing function to each window
             dataset_processed = dataset_flattened.map(
