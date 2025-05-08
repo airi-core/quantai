@@ -16,8 +16,8 @@ use_text_input: True
 
 # Parameter Konfigurasi untuk Windowing Data Deret Waktu
 parameter_windowing:
-  window_size: 60 # Jumlah periode waktu (misal: candle) dalam satu window input historis.
-  window_shift: 1 # Pergeseran (dalam periode waktu) antar awal window berurutan. (1 = setiap candle baru memulai window baru).
+  window_size: 60 # Jumlah periode waktu (misal: candle) dalam satu window input historis. Harus integer positif.
+  window_shift: 1 # Pergeseran (dalam periode waktu) antar awal window berurutan. (1 = setiap candle baru memulai window baru). Harus integer positif.
 
 # Konfigurasi Data Input dan Preprocessing
 data:
@@ -25,11 +25,15 @@ data:
   # tempat workflow GitHub Actions dijalankan. SESUAIKAN PATH INI JIKA LOKASI FILE BERBEDA.
   raw_path: 'data/raw/XAU_15m_data.csv'
 
+  # Delimiter karakter yang digunakan di file data mentah CSV.
+  # Gunakan ';' untuk file yang dipisahkan semicolon, ',' untuk file standar, '\t' untuk tab.
+  delimiter: ';' # <-- SET INI SESUAI DENGAN DELIMITER ASLI FILE ANDA (Misal: ';' untuk file Anda)
+
   # Nama kolom yang berisi informasi tanggal/waktu di data mentah.
   # Digunakan untuk pengurutan dan alignment prediksi.
   date_column: 'Date' # SESUAIKAN JIKA NAMA KOLOM TANGGAL ANDA BERBEDA
 
-  # Apakah menyertakan kolom tanggal dalam pengecekan baris NaN awal.
+  # Apakah menyertakan kolom tanggal dalam pengecekan baris NaN awal (dropna subset).
   # Set ke True jika baris tanpa tanggal juga harus dihapus.
   include_date_in_nan_check: False # Set True jika perlu
 
@@ -38,38 +42,40 @@ data:
   train_split: 0.8
   val_split: 0.1
   # Sisa proporsi (1.0 - train_split - val_split) otomatis menjadi test set.
+  # Pastikan jumlah data cukup setelah preprocessing untuk setiap set > 0.
 
   # Kolom fitur numerik yang akan diambil langsung dari data mentah (setelah preprocessing dasar,
   # sebelum feature engineering indikator). Jangan masukkan kolom tanggal di sini.
-  feature_cols_numeric: ['Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA
+  # NAMA-NAMA KOLOM DI SINI HARUS SAMA PERSIS (TERMASUK KAPITALISASI) DENGAN HEADER DI FILE CSV.
+  feature_cols_numeric: ['Date','Open', 'High', 'Low', 'Close', 'Volume'] # SESUAIKAN JIKA NAMA KOLOM BERBEDA
 
   # Parameter Pemrosesan Teks (jika use_text_input: True)
   # Panjang maksimum sekuens token teks setelah tokenisasi per periode dalam window.
-  # Teks akan di-pad atau dipotong ke panjang ini.
+  # Teks akan di-pad (dengan ID 0) atau dipotong ke panjang ini. Harus integer positif.
   max_text_sequence_length: 20
 
   # Parameter Pipeline tf.data untuk performa.
   # Ukuran buffer untuk mengocok (shuffle) data pelatihan. Nilai yang lebih besar = pengocokan lebih baik
-  # (mendekati acak sempurna) tetapi menggunakan lebih banyak memori.
+  # (mendekati acak sempurna) tetapi menggunakan lebih banyak memori. Harus integer positif.
   shuffle_buffer_size: 1000
 
 
 # Konfigurasi Arsitektur Model QuantAI
 model:
   architecture:
-    # Jumlah unit (neuron) di layer GRU.
+    # Jumlah unit (neuron) di layer GRU. Harus integer positif.
     gru_units: 64
-    # Tingkat dropout untuk regularisasi (mencegah overfitting).
+    # Tingkat dropout untuk regularisasi (mencegah overfitting). Nilai 0.0 hingga 1.0.
     dropout_rate: 0.2
-    # Apakah menggunakan Layer Konvolusional 1D (Conv1D) tambahan setelah GRU.
+    # Apakah menggunakan Layer Konvolusional 1D (Conv1D) tambahan setelah GRU (True/False).
     use_conv1d: True
-    # Jumlah filter di Layer Conv1D (jika use_conv1d: True).
+    # Jumlah filter di Layer Conv1D (jika use_conv1d: True). Harus integer positif.
     conv1d_filters: 32
-    # Ukuran kernel (lebar filter) di Layer Conv1D (jika use_conv1d: True).
+    # Ukuran kernel (lebar filter) di Layer Conv1D (jika use_conv1d: True). Harus integer positif.
     conv1d_kernel_size: 3
-    # Tingkat dilatasi di Layer Conv1D (jika use_conv1d: True), untuk menangkap pola yang lebih luas (TCN-inspired).
+    # Tingkat dilatasi di Layer Conv1D (jika use_conv1d: True), untuk menangkap pola yang lebih luas (TCN-inspired). Harus integer positif.
     conv1d_dilation_rate: 2
-    # Dimensi vektor embedding untuk merepresentasikan token teks (jika use_text_input: True).
+    # Dimensi vektor embedding untuk merepresentasikan token teks (jika use_text_input: True). Harus integer positif.
     embedding_dim: 32
 
   # Path untuk memuat model yang sudah ada (jika mode 'incremental_learn' atau 'predict_only').
@@ -79,28 +85,31 @@ model:
 
 # Konfigurasi Pelatihan Model
 training:
-  # Ukuran batch untuk pelatihan, validasi, dan pengujian/prediksi.
+  # Ukuran batch untuk pelatihan, validasi, dan pengujian/prediksi. Harus integer positif.
   batch_size: 32
-  # Jumlah epoch untuk pelatihan awal ('initial_train').
+  # Jumlah epoch untuk pelatihan awal ('initial_train'). Harus integer positif.
   epochs: 100
-  # Jumlah epoch untuk pelatihan inkremental ('incremental_learn').
+  # Jumlah epoch untuk pelatihan inkremental ('incremental_learn'). Harus integer positif.
   incremental_epochs: 10
-  # Tingkat pembelajaran awal untuk optimizer (misal: Adam).
+  # Tingkat pembelajaran awal untuk optimizer (misal: Adam). Harus float positif.
   learning_rate: 0.001
 
   # Parameter untuk Keras Callbacks (untuk mengontrol proses pelatihan).
-  # EarlyStopping: Menghentikan pelatihan jika metrik validasi tidak membaik selama 'patience' epoch.
+  # EarlyStopping: Menghentikan pelatihan jika metrik validasi tidak membaik selama 'patience' epoch. Integer positif.
   early_stopping_patience: 10
   # ReduceLROnPlateau: Mengurangi learning rate jika metrik validasi stagnan.
+  # Factor pengurangan learning rate. Harus float positif < 1.0.
   lr_reduce_factor: 0.5
+  # Jumlah epoch tanpa peningkatan sebelum LR dikurangi. Integer positif.
   lr_reduce_patience: 5
-  min_lr: 0.0001 # Learning rate minimum setelah pengurangan.
+  # Learning rate minimum setelah pengurangan. Float positif.
+  min_lr: 0.0001
 
 # Konfigurasi Output Pipeline (Hasil Pelatihan, Scaler, Prediksi, Log)
 output:
   # Base directory tempat semua output akan disimpan. Path ini relatif terhadap
   # root repositori GitHub tempat workflow Actions dijalankan.
-  base_dir: 'quantai_output' # <-- SESUAIKAN PATH INI JIKA BERBEDA
+  base_dir: 'quantai_output' # <-- SESUAIKAN PATH INI JIKA BERBEDA (misal: 'artifacts/quantai')
 
   # Path untuk menyimpan model terlatih (.h5).
   # Model terbaik selama pelatihan (berdasarkan metrik validasi) akan disimpan di sini oleh ModelCheckpoint.
@@ -112,17 +121,17 @@ output:
   # Subdirektori di dalam 'base_dir' untuk menyimpan objek scaler (MinMaxScaler).
   scaler_subdir: 'scalers'
   # Path file di dalam 'base_dir' untuk menyimpan kosakata teks (jika use_text_input: True).
-  # Default jika tidak ditentukan adalah 'scalers/vocabulary.txt'.
+  # Path ini relatif terhadap 'base_dir'. Default jika tidak ditentukan adalah 'scalers/vocabulary.txt'.
   # vocabulary_file: 'scalers/vocabulary.txt' # Opsional, bisa dikonfigurasi jika perlu
 
-  # Path file di dalam 'base_dir' untuk menyimpan hasil evaluasi akhir (dalam format JSON).
+  # Path file di dalam 'base_dir' untuk menyimpan hasil evaluasi akhir (dalam format JSON). Relatif terhadap 'base_dir'.
   eval_results_file: 'evaluation_metrics/eval_results.json'
   # Path file di dalam 'base_dir' untuk menyimpan hasil prediksi (dalam format CSV),
-  # termasuk kolom 'Date' yang selaras.
+  # termasuk kolom 'Date' yang selaras. Relatif terhadap 'base_dir'.
   predictions_file: 'predictions/predictions.csv'
 
-  # Apakah akan menyimpan file prediksi setelah pipeline selesai (True/False).
+  # Apakah akan menyimpan file prediksi pada data test/prediksi setelah pipeline selesai (True/False).
   save_predictions: True
 
-  # Subdirektori di dalam 'base_dir' untuk log TensorBoard.
+  # Subdirektori di dalam 'base_dir' untuk log TensorBoard. Relatif terhadap 'base_dir'.
   tensorboard_log_dir: 'logs/tensorboard'
