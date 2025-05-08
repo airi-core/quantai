@@ -952,31 +952,84 @@ if __name__ == "__main__":
         logger.info(f"Konfigurasi berhasil dimuat dari {config_path}")
         # logger.info(f"Konfigurasi: {config}") # Opsi: log seluruh config
     except FileNotFoundError:
-        logger.error(f"File konfigurasi tidak ditemukan di {config_path}. Pastikan path benar.")
+        logger.error(f"File konfigurasi tidak ditemukan di {config_path}. Pastikan path benar di workflow atau command-line.")
         exit(1) # Keluar dengan kode error jika config tidak ditemukan
 
     except yaml.YAMLError as e:
-        logger.error(f"Error mem-parsing file konfigurasi YAML: {e}")
+        logger.error(f"Error mem-parsing file konfigurasi YAML dari {config_path}: {e}")
         exit(1) # Keluar dengan kode error jika file config error
 
     # Jalankan pipeline utama hanya jika config berhasil dimuat
     if config:
-        # Tambahkan path 'vocabulary_file' default ke config jika belum ada
-        if config['use_text_input'] and 'vocabulary_file' not in config['output']:
-             config['output']['vocabulary_file'] = os.path.join(config['output']['scaler_subdir'], 'vocabulary.txt')
-             logger.info(f"Menambahkan path default vocabulary_file: {config['output']['vocabulary_file']}")
+        # --- Validasi Konfigurasi Esensial ---
+        essential_keys = ['data', 'model', 'training', 'output', 'parameter_windowing'] # Menambahkan parameter_windowing
+        missing_keys = [key for key in essential_keys if key not in config or config[key] is None] # Cek juga jika kunci ada tapi nilainya None
 
-        # Tambahkan path 'model_save_file' default jika belum ada
-        if 'model_save_file' not in config['output']:
-             config['output']['model_save_file'] = os.path.join(config['output']['model_subdir'], 'best_model.h5') # Sesuaikan dengan nama file .h5
-             logger.info(f"Menambahkan path default model_save_file: {config['output']['model_save_file']}")
+        if missing_keys:
+            logger.error(f"File konfigurasi ({config_path}) tidak lengkap atau rusak. Kunci utama yang hilang atau kosong: {missing_keys}")
+            logger.error("Pastikan file konfigurasi YAML memiliki semua bagian utama (data, model, training, output, parameter_windowing) dan tidak kosong.")
+            exit(1) # Keluar jika konfigurasi tidak valid
 
-        # Perbarui model load_path di config jika mode bukan initial_train
-        if config['mode'] in ['incremental_learn', 'predict_only'] and 'load_path' in config['model'] and '.h5' not in config['model']['load_path']:
-             logger.warning(f"model.load_path ({config['model']['load_path']}) di config sepertinya bukan file .h5. Pastikan sesuai dengan format simpan ('{config['output']['model_save_file']}').")
+        # --- Menambahkan Path Default (jika belum ada) ---
+        # Sekarang kita yakin kunci utama ada karena sudah divalidasi di atas
+        # Gunakan .get() untuk mengakses sub-kunci dengan aman jika sub-kunci tersebut opsional atau mungkin hilang
+
+        # Tambahkan path 'vocabulary_file' default ke config['output'] jika belum ada dan use_text_input True
+        # Gunakan .get() untuk mengakses 'scaler_subdir' dengan aman jika 'output' ada tapi 'scaler_subdir' tidak
+        # Pastikan config['output'] adalah dictionary
+        if isinstance(config['output'], dict):
+             if config.get('use_text_input', False) and 'vocabulary_file' not in config['output']:
+                  scaler_subdir = config['output'].get('scaler_subdir', 'scalers') # Gunakan default 'scalers' jika scaler_subdir tidak ada
+                  # Gunakan base_dir dari config['output'] untuk membangun path lengkap
+                  base_dir = config['output'].get('base_dir', '') # Gunakan default '' jika base_dir tidak ada
+                  config['output']['vocabulary_file'] = os.path.join(base_dir, scaler_subdir, 'vocabulary.txt')
+                  logger.info(f"Menambahkan path default vocabulary_file: {config['output']['vocabulary_file']}")
+
+             # Tambahkan path 'model_save_file' default ke config['output'] jika belum ada
+             # Gunakan .get() untuk mengakses 'model_subdir' dengan aman
+             if 'model_save_file' not in config['output']:
+                  model_subdir = config['output'].get('model_subdir', 'saved_model') # Gunakan default 'saved_model' jika model_subdir tidak ada
+                  # Gunakan base_dir dari config['output'] untuk membangun path lengkap
+                  base_dir = config['output'].get('base_dir', '') # Gunakan default '' jika base_dir tidak ada
+                  config['output']['model_save_file'] = os.path.join(base_dir, model_subdir, 'best_model.h5') # Sesuaikan dengan nama file .h5
+                  logger.info(f"Menambahkan path default model_save_file: {config['output']['model_save_file']}")
+
+        else:
+             logger.error("Kunci 'output' ada tetapi bukan dictionary. Pastikan format file konfigurasi benar.")
+             exit(1) # Keluar jika format output salah
 
 
-        run_pipeline(config)
+        # Perbarui log warning untuk load_path jika mode bukan initial_train dan load_path terlihat salah format
+        # Pastikan config['model'] adalah dictionary sebelum mengaksesnya
+        if isinstance(config['model'], dict):
+             if config['mode'] in ['incremental_learn', 'predict_only']:
+                 if 'load_path' in config['model']:
+                     # Check if load_path ends with .h5 or is a directory (for SavedModel)
+                     # If saving is forced to .h5, the load path should ideally be .h5
+                     expected_extension = '.h5'
+                     if not config['model']['load_path'].endswith(expected_extension):
+                          logger.warning(f"model.load_path ({config['model']['load_path']}) di config sepertinya bukan file {expected_extension}. Pastikan sesuai dengan format simpan ('{config['output']['model_save_file']}').")
+                 else:
+                      logger.error("Mode inkremental_learn atau predict_only dipilih, tetapi model.load_path tidak ada di file konfigurasi.")
+                      exit(1) # Keluar jika load_path tidak ada di mode yang membutuhkannya
+        else:
+            logger.error("Kunci 'model' ada tetapi bukan dictionary. Pastikan format file konfigurasi benar.")
+            exit(1)
+
+
+        # --- Jalankan Pipeline Utama ---
+        # Pastikan semua path relatif di config di-resolve jika perlu di run_pipeline
+        # run_pipeline() saat ini menggunakan os.path.join(output_dir, ...) yang bergantung pada base_dir
+        # Pastikan base_dir ada dan digunakan konsisten. base_dir juga sudah divalidasi ada di essential_keys.
+        if isinstance(config['output'], dict) and 'base_dir' in config['output']:
+             run_pipeline(config)
+        else:
+             # Ini seharusnya tidak tercapai jika essential_keys dan validasi dictionary di atas benar
+             logger.error("Konfigurasi output atau base_dir tidak ditemukan setelah validasi.")
+             exit(1)
+
+
     else:
-        logger.error("Tidak ada konfigurasi yang tersedia. Menghentikan eksekusi.")
+        # Ini seharusnya tidak tercapai jika exit(1) dipanggil di blok try/except di atas
+        logger.error("Tidak ada konfigurasi yang tersedia setelah mencoba memuat file.")
         exit(1)
