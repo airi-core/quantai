@@ -11,21 +11,24 @@ on:
       - 'internal_workflow/main_pipeline.py' # Trigger jika kode pipeline berubah
       - 'config/quantai_config.yaml'         # Trigger jika file config berubah
       - 'requirements.txt'                  # Trigger jika dependensi berubah
-      - 'data/raw/XAU_15m_data.csv'          # Trigger jika data berubah (opsional, hati-hati jika data sangat besar)
+      # Aktifkan baris di bawah jika Anda ingin pipeline dijalankan setiap kali data berubah
+      # paths:
+      #   - 'data/raw/XAU_15m_data.csv' # PERHATIAN: Hati-hati jika file data sangat besar!
 
-  # Atau, Anda bisa menggunakan workflow_dispatch untuk memicu secara manual dari UI GitHub
+  # Menggunakan workflow_dispatch untuk memicu secara manual dari UI GitHub
   workflow_dispatch:
     inputs:
       config_path:
         description: 'Path to the configuration file (relative to repo root)'
-        required: true
+        required: false # Buat optional jika ingin menggunakan default path
         default: 'config/quantai_config.yaml' # Default path ke file config
 
 # Menentukan job yang akan dijalankan
 jobs:
   train:
     # Runner environment
-    # Gunakan 'ubuntu-latest' standar. Jika butuh GPU, cari runner yang menyediakan (biasanya self-hosted atau layanan cloud eksternal)
+    # Gunakan 'ubuntu-latest' standar (CPU). Jika butuh GPU, cari runner yang menyediakan
+    # (biasanya self-hosted runner atau integrasi cloud eksternal).
     runs-on: ubuntu-latest
 
     # Langkah-langkah yang akan dijalankan di runner
@@ -35,38 +38,38 @@ jobs:
         uses: actions/checkout@v4
 
       # Langkah 2: Setup Python
-      - name: Set up Python 3.9 # Ganti versi Python jika perlu
+      # Pastikan versi Python sesuai dengan kebutuhan TensorFlow dan library lain
+      - name: Set up Python 3.9 # Ganti versi Python jika perlu (misal: '3.10', '3.11')
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.9' # Sesuaikan versi
           cache: 'pip' # Cache dependensi pip untuk eksekusi lebih cepat
 
       # Langkah 3: Instal dependensi
-      # Pastikan file requirements.txt ada di root repositori Anda
+      # Membaca dan menginstal semua library dari requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Verify data exists
-        run: |
-          if [ ! -f "data/raw/XAU_15m_data.csv" ]; then
-            echo "Data file not found!"
-            exit 1
-          fi
+
       # Langkah 4: Jalankan script pipeline utama
-      # Gunakan path ke script dan path ke file config
+      # Menjalankan script Python dan memberikan path ke file config sebagai argumen
       - name: Run QuantAI Pipeline
-        # Jika dipicu oleh push, gunakan path config hardcoded
-        # Jika dipicu oleh workflow_dispatch, gunakan input config_path
-        run: python internal_workflow/main_pipeline.py --config ${{ github.event.inputs.config_path || 'config/quantai_config.yaml' }}
+        # Mengambil path config dari input manual (jika ada) atau menggunakan default path
+        # PASTIKAN PATH INI SESUAI DENGAN LOKASI main_pipeline.py DAN quantai_config.yaml DI REPO ANDA
+        run: |
+          CONFIG_PATH=${{ github.event.inputs.config_path || 'config/quantai_config.yaml' }}
+          echo "Using config path: $CONFIG_PATH"
+          python internal_workflow/main_pipeline.py --config "$CONFIG_PATH"
 
       # Langkah 5: Upload artefak hasil
-      # Mengunggah SavedModel, scaler, hasil evaluasi, dan prediksi
+      # Mengunggah output pipeline (model, scaler, hasil evaluasi, prediksi)
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quantai-pipeline-output
-          path: quantai_output/ # Path ini harus sesuai dengan output['base_dir'] di config YAML
+          name: quantai-pipeline-output # Nama artefak di GitHub Actions
+          # Path ini harus sesuai dengan output['base_dir'] di file config YAML
+          # Sesuaikan path jika output base directory Anda berbeda
+          path: quantai_output/
           # Jika Anda ingin mengunggah log TensorBoard juga, tambahkan path-nya di sini
           # path: |
           #   quantai_output/
-          #   quantai_output/logs/tensorboard/ # Jika log tensorboard di sub-direktori ini
+          #   quantai_output/logs/tensorboard/ # Contoh: jika log tensorboard di subfolder logs/tensorboard
