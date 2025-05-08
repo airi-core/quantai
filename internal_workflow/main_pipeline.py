@@ -669,7 +669,8 @@ def run_pipeline(config):
                  return None # Cannot create window dataset from None
 
             dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
-            dataset_flattened = dataset_windowed.flat_map(lambda window: window.batch(window_size)) # Collect elements in window
+            dataset_flattened = dataset_windowed.flat_map(lambda window, *args: window.batch(window_size))
+            # dataset_flattened = dataset_windowed.flat_map(lambda window: window.batch(window_size)) # Collect elements in window
 
             # Apply the processing function to each window
             dataset_processed = dataset_flattened.map(
