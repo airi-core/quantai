@@ -1,5 +1,5 @@
 # Dokumentasi Arsitektur QuantAI
-
+- https://g.co/gemini/share/a484852a5fd6
 ## Struktur Direktori
 
 ```
