@@ -189,7 +189,17 @@ def build_quantai_model(config, numeric_input_shape, text_input_shape, num_targe
                                            mask_zero=True # Penting jika 0 digunakan untuk padding
                                           )(text_input) # Output shape (window_size, max_text_sequence_length, embedding_dim)
 
-        # Pool embeddings across max_text_sequence_length first, then process resulting sequence (window_size, embedding_dim) with GRU
+
+        # Embeddings for a sequence of text inputs need to be processed, e.g., by another GRU or Conv1D
+        # Use TimeDistributed if applying a layer to each step in the window_size dimension
+        # Menggunakan API Keras Layers: GRU (to process the sequence of text embeddings)
+        # Apply GRU to the last two dimensions (max_text_sequence_length, embedding_dim) for each time step in window_size
+        # Can use TimeDistributed if GRU input is not sequence-like across window_size
+        # If GRU processes shape (max_text_sequence_length, embedding_dim) for each window step:
+        # x_text = tf.keras.layers.TimeDistributed(tf.keras.layers.GRU(gru_units // 2))(x_text) # Output shape (window_size, units/2)
+        # Then pool/flatten x_text results across window_size
+
+        # Alternative: Pool embeddings across max_text_sequence_length first, then process resulting sequence (window_size, embedding_dim) with GRU
         x_text = tf.keras.layers.GlobalAveragePooling1D()(x_text) # Pool across max_text_sequence_length. Output shape (window_size, embedding_dim)
          # Menggunakan API Keras Layers: GRU (to process the sequence of pooled text embeddings)
         x_text = tf.keras.layers.GRU(gru_units // 2)(x_text) # Process sequence across window_size. Output shape (units/2)
@@ -275,7 +285,10 @@ def run_pipeline(config):
              return # Hentikan pipeline jika file data tidak ada
 
         if data_path.endswith('.csv'):
-            df = pd.read_csv(data_path)
+            # Baca delimiter dari config, default ke ',' jika tidak ada
+            data_delimiter = config['data'].get('delimiter', ',')
+            logger.info(f"Membaca CSV dengan delimiter: '{data_delimiter}'")
+            df = pd.read_csv(data_path, sep=data_delimiter) # <-- Menggunakan delimiter dari config
         elif data_path.endswith('.json'):
             df = pd.read_json(data_path)
         else:
@@ -302,23 +315,39 @@ def run_pipeline(config):
 
         # Option to include date in NaN check
         if date_column_name is not None and config['data'].get('include_date_in_nan_check', False):
-             if date_column_name not in cols_to_check_nan: # Avoid adding twice if Date is somehow in feature_cols_numeric
+             if date_column_name not in cols_to_check_nan:
                 cols_to_check_nan.append(date_column_name)
                 logger.info(f"Menyertakan kolom '{date_column_name}' dalam pengecekan NaN awal.")
         elif date_column_name is None and config['data'].get('include_date_in_nan_check', False):
              logger.warning("include_date_in_nan_check true tetapi kolom Date tidak ditemukan.")
 
-        # Ensure OHLC are in cols_to_check_nan if they are features or needed for pivots
-        ohlc_cols_basic = ['Open', 'High', 'Low', 'Close']
-        for col in ohlc_cols_basic:
+        # Ensure OHLC and Volume are in cols_to_check_nan if they are features or needed for pivots/targets
+        ohlcv_cols_basic = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in ohlcv_cols_basic:
             if col in df.columns and col not in cols_to_check_nan:
-                 cols_to_check_nan.append(col) # Ensure OHLC are checked if present
+                 cols_to_check_nan.append(col)
 
         # Perform initial dropna on specified cols
         if cols_to_check_nan: # Only drop if there are columns to check
-            df.dropna(subset=cols_to_check_nan, inplace=True)
-            if len(df) < initial_rows:
-                logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di kolom utama: {cols_to_check_nan}")
+            # Check if all columns in subset exist before calling dropna
+            missing_cols_subset = [col for col in cols_to_check_nan if col not in df.columns]
+            if missing_cols_subset:
+                 logger.error(f"Kolom berikut tidak ditemukan di DataFrame untuk pengecekan NaN: {missing_cols_subset}")
+                 # This will lead to a KeyError if not caught, but we want to log clearly
+                 # Let's raise a more specific error or filter the list
+                 cols_to_check_nan = [col for col in cols_to_check_nan if col in df.columns]
+                 if not cols_to_check_nan:
+                      logger.warning("Semua kolom yang ditentukan untuk pengecekan NaN awal tidak ditemukan di DataFrame.")
+                      # Skip dropna if no valid columns to check
+                 else:
+                      logger.warning(f"Melakukan pengecekan NaN hanya pada kolom yang ada: {cols_to_check_nan}")
+
+            if cols_to_check_nan: # Re-check if list is still not empty
+                df.dropna(subset=cols_to_check_nan, inplace=True)
+                if len(df) < initial_rows:
+                    logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di kolom utama: {cols_to_check_nan}")
+            else:
+                logger.warning("Tidak ada valid column yang tersisa untuk pengecekan NaN awal.")
         else:
             logger.warning("Tidak ada kolom yang ditentukan untuk pengecekan NaN awal.")
 
@@ -354,12 +383,15 @@ def run_pipeline(config):
 
             # Menghapus baris dengan NaN di target setelah shift
             initial_rows = len(df)
-            if target_cols: # Only drop if target columns were created
+            if target_cols and all(col in df.columns for col in target_cols): # Ensure target columns exist before dropna
                 df.dropna(subset=target_cols, inplace=True)
                 if len(df) < initial_rows:
                      logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di target setelah shift (-{window_size}).")
+            elif target_cols:
+                logger.warning(f"Kolom target ({target_cols}) tidak ditemukan setelah shift. Melewatkan dropna target.")
             else:
                 logger.warning("Kolom target tidak terdefinisi. Melewatkan dropna target.")
+
 
         else:
              logger.error("Kolom High, Low, Close tidak tersedia untuk membuat target. Tidak dapat melanjutkan.")
@@ -370,40 +402,67 @@ def run_pipeline(config):
         if config.get('use_text_input', False):
             logger.info("Membuat fitur teks deskriptif...")
             # Check if columns needed for text generation exist AFTER all drops
-            cols_needed_for_text = ['High', 'Low', 'Close'] + [col for col in df.columns if col.startswith(('Piv', 'R', 'S')) and col in df.columns] # Include calculated indicators only if they exist
-            if all(col in df.columns for col in cols_needed_for_text):
+            cols_needed_for_text = ['High', 'Low', 'Close'] + [col for col in df.columns if col.startswith(('Piv', 'R', 'S'))]
+            # Filter needed columns to only those actually present in df
+            cols_needed_for_text_present = [col for col in cols_needed_for_text if col in df.columns]
+
+            if all(col in df.columns for col in cols_needed_for_text_present): # Check against present columns
                 df['Analysis_Text'] = df.apply(generate_analysis_text, axis=1)
                 feature_cols_text = ['Analysis_Text']
                 if not df.empty:
-                     logger.info(f"Contoh teks analisis: '{df['Analysis_Text'].iloc[0]}'")
+                     # Ensure the column was actually added and is not empty
+                     if 'Analysis_Text' in df.columns and not df['Analysis_Text'].empty:
+                         logger.info(f"Contoh teks analisis: '{df['Analysis_Text'].iloc[0]}'")
+                     else:
+                         logger.warning("Kolom 'Analysis_Text' kosong atau tidak terbuat.")
+                         feature_cols_text = [] # Reset if creation failed somehow
                 else:
                      logger.warning("DataFrame kosong setelah membuat teks analisis.")
+                     feature_cols_text = [] # Reset if df is empty
             else:
-                 logger.warning(f"Kolom yang dibutuhkan untuk generate_analysis_text tidak lengkap ({cols_needed_for_text}). Fitur teks tidak akan dibuat.")
+                 logger.warning(f"Kolom yang dibutuhkan untuk generate_analysis_text tidak lengkap setelah pembersihan data ({cols_needed_for_text}). Fitur teks tidak akan dibuat.")
+                 feature_cols_text = [] # Ensure empty list if creation skipped
 
 
         # Identifikasi Fitur Input dan Target
         # Pastikan kolom indikator yang dihitung juga masuk fitur numerik
         indicator_cols = [col for col in df.columns if col.startswith(('Piv', 'R', 'S'))]
-        # Ambil feature_cols_numeric dari config, lalu tambahkan indicator_cols jika belum ada
         feature_cols_numeric = list(config['data']['feature_cols_numeric'])
         for col in indicator_cols:
             if col not in feature_cols_numeric and col in df.columns:
                 feature_cols_numeric.append(col)
 
-        # Remove date column from features if present in config
+        # Remove date column from features if present in config (shouldn't be, but safety)
         if date_column_name is not None and date_column_name in feature_cols_numeric:
              feature_cols_numeric.remove(date_column_name)
              logger.warning(f"Kolom '{date_column_name}' dihapus dari fitur numerik karena biasanya tidak digunakan secara langsung.")
+
+        # Filter feature_cols_numeric to only include columns actually present in the DataFrame
+        feature_cols_numeric_present = [col for col in feature_cols_numeric if col in df.columns]
+        if len(feature_cols_numeric_present) < len(feature_cols_numeric):
+             missing_feat_cols = [col for col in feature_cols_numeric if col not in feature_cols_numeric_present]
+             logger.warning(f"Beberapa kolom fitur numerik dari konfigurasi tidak ditemukan di DataFrame: {missing_feat_cols}")
+        feature_cols_numeric = feature_cols_numeric_present # Use only columns that exist
 
 
         # Filter DataFrame hanya untuk kolom fitur dan target yang relevan
         all_feature_target_cols = feature_cols_numeric + feature_cols_text + target_cols
         # Exclude date column explicitly if it exists and is not a feature
         if date_column_name is not None and date_column_name in all_feature_target_cols:
-             # This case should not happen if we removed it from feature_cols_numeric, but double check
              all_feature_target_cols.remove(date_column_name)
 
+
+        # Ensure df is not empty before selecting columns
+        if df.empty:
+             logger.error("DataFrame kosong setelah preprocessing. Tidak dapat memilih kolom untuk konversi NumPy.")
+             return # Hentikan jika DataFrame kosong
+
+        # Check if all necessary columns exist in df before creating df_processed
+        missing_final_cols = [col for col in all_feature_target_cols if col not in df.columns]
+        if missing_final_cols:
+             logger.error(f"Kolom fitur atau target akhir yang dibutuhkan tidak ditemukan di DataFrame: {missing_final_cols}")
+             logger.error("Periksa konfigurasi feature_cols_numeric dan apakah Pivot/Target berhasil dibuat.")
+             return # Hentikan jika kolom final tidak lengkap
 
         df_processed = df[all_feature_target_cols].copy()
 
@@ -411,6 +470,11 @@ def run_pipeline(config):
         total_samples_processed = len(df_processed)
         train_split = config['data'].get('train_split', 0.8)
         val_split = config['data'].get('val_split', 0.1)
+
+        # Ensure splits are valid ratios
+        if train_split + val_split >= 1.0 or train_split < 0 or val_split < 0:
+             logger.error(f"Split ratio tidak valid: train_split={train_split}, val_split={val_split}. Total harus < 1.0 dan >= 0.")
+             return # Hentikan jika split ratio tidak valid
 
         train_size = int(np.floor(total_samples_processed * train_split))
         val_size = int(np.floor(total_samples_processed * val_split))
@@ -422,6 +486,7 @@ def run_pipeline(config):
 
         # Konversi ke NumPy Arrays
         if not df_processed.empty:
+            # Use the filtered feature_cols_numeric list
             data_numeric = df_processed[feature_cols_numeric].values.astype(np.float32)
             data_text = df_processed[feature_cols_text].values.flatten().astype(str) if feature_cols_text else np.array([], dtype=str)
             data_target = df_processed[target_cols].values.astype(np.float32)
@@ -484,8 +549,15 @@ def run_pipeline(config):
 
             scaled_target_val = scaler_target.transform(target_val)
             logger.info("Data numerik berhasil diskalakan.")
+        elif input_train_numeric.shape[0] > 0: # Check if there are rows even if all values are 0/NaN after filtering
+             logger.warning("Data numerik pelatihan memiliki baris tetapi semua nilai mungkin 0/NaN setelah pembersihan. Scaling mungkin tidak relevan.")
+             scaled_input_train = input_train_numeric
+             scaled_input_val = input_val_numeric
+             scaled_input_test = input_test_numeric
+             scaled_target_train = target_train
+             scaled_target_val = target_val
         else:
-             logger.warning("Tidak ada data numerik untuk scaling.")
+             logger.warning("Tidak ada data numerik pelatihan untuk scaling.")
              scaled_input_train = input_train_numeric
              scaled_input_val = input_val_numeric
              scaled_input_test = input_test_numeric
@@ -498,7 +570,6 @@ def run_pipeline(config):
             input_train_text_str = tf.constant(input_train_text.tolist(), dtype=tf.string)
             all_train_tokens_ragged = tf.strings.split(input_train_text_str)
             all_train_tokens_np = all_train_tokens_ragged.values.numpy()
-            # Filter out empty strings before finding unique tokens
             unique_tokens_np = np.unique(all_train_tokens_np[all_train_tokens_np != b''])
 
             if unique_tokens_np.size > 0:
@@ -509,9 +580,9 @@ def run_pipeline(config):
                 vocabulary_table = tf.lookup.StaticVocabularyTable(init, num_oov_buckets=num_oov_buckets)
                 vocabulary_size = vocabulary_table.size().numpy() + 1 # Size includes unique keys + OOV bucket + PAD (index 0)
                 logger.info(f"Ukuran kosakata teks (termasuk OOV dan PAD 0): {vocabulary_size}")
-                logger.info(f"Contoh token unik (mapping value): {[t.decode('utf-8') for t in unique_tokens_np[:5]]} -> {vocabulary_table.lookup(tf.constant(unique_tokens_np[:5])).numpy()}")
+                logger.info(f"Contoh token unik (mapping value): {[t.decode('utf-8') for t in unique_tokens_np[:min(5, unique_tokens_np.size)]]} -> {vocabulary_table.lookup(tf.constant(unique_tokens_np[:min(5, unique_tokens_np.size)])).numpy()}")
             else:
-                 logger.warning("Tidak ada token unik yang ditemukan di data teks pelatihan (setelah filter string kosong). Kosakata tidak dibuat.")
+                 logger.warning("Tidak ada token unik yang ditemukan di data teks pelatihan. Kosakata tidak dibuat.")
                  vocabulary_size = 2 # Minimum size for PAD (0) and OOV (1)
                  vocabulary_table = None
 
@@ -520,8 +591,8 @@ def run_pipeline(config):
              vocabulary_size = 2
              vocabulary_table = None
         elif config.get('use_text_input', False) and not feature_cols_text:
-             logger.warning("Fitur teks diaktifkan di config, tetapi kolom teks ('Analysis_Text') tidak ditemukan atau tidak dibuat.")
-             vocabulary_size = 2
+             logger.info("Fitur teks diaktifkan di config, tetapi kolom teks ('Analysis_Text') tidak ditemukan atau tidak dibuat.")
+             vocabulary_size = 0 # No vocabulary needed
              vocabulary_table = None
         else:
              logger.info("Fitur teks tidak digunakan.")
@@ -530,14 +601,37 @@ def run_pipeline(config):
 
 
         # Membuat tf.data.Dataset dari data yang sudah diproses
-        if feature_cols_text:
-            dataset_train_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_train, input_train_text), scaled_target_train))
-            dataset_val_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_val, input_val_text), scaled_target_val))
-            dataset_test_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_test, input_test_text), target_test))
+        # Check if corresponding data arrays are not empty before creating datasets
+        create_train_dataset = input_train_numeric.shape[0] > 0 or input_train_text.shape[0] > 0
+        create_val_dataset = input_val_numeric.shape[0] > 0 or input_val_text.shape[0] > 0
+        create_test_dataset = input_test_numeric.shape[0] > 0 or input_test_text.shape[0] > 0
+
+        if create_train_dataset:
+             if feature_cols_text:
+                 dataset_train_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_train, input_train_text), scaled_target_train))
+             else:
+                 dataset_train_raw = tf.data.Dataset.from_tensor_slices((scaled_input_train, scaled_target_train))
         else:
-            dataset_train_raw = tf.data.Dataset.from_tensor_slices((scaled_input_train, scaled_target_train))
-            dataset_val_raw = tf.data.Dataset.from_tensor_slices((scaled_input_val, scaled_target_val))
-            dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_input_test, target_test))
+             logger.warning("Tidak ada data pelatihan untuk membuat dataset train.")
+             dataset_train_raw = None
+
+        if create_val_dataset:
+             if feature_cols_text:
+                 dataset_val_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_val, input_val_text), scaled_target_val))
+             else:
+                 dataset_val_raw = tf.data.Dataset.from_tensor_slices((scaled_input_val, scaled_target_val))
+        else:
+             logger.warning("Tidak ada data validasi untuk membuat dataset val.")
+             dataset_val_raw = None
+
+        if create_test_dataset:
+             if feature_cols_text:
+                 dataset_test_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_test, input_test_text), target_test))
+             else:
+                 dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_input_test, target_test))
+        else:
+             logger.warning("Tidak ada data test untuk membuat dataset test.")
+             dataset_test_raw = None
 
 
         # Fungsi untuk membuat window dan memproses elemen dataset
@@ -553,14 +647,14 @@ def run_pipeline(config):
 
              processed_text_window = None
 
-             if use_text and text_window is not None and vocab_table is not None and max_seq_len > 0: # Check max_seq_len > 0
+             if use_text and text_window is not None and vocab_table is not None and max_seq_len > 0:
                  processed_text_window = tf.map_fn(
                      lambda text_elem: process_text_for_model(text_elem, max_seq_len, vocab_table),
                      text_window,
                      fn_output_signature=tf.int64
                  )
              elif use_text:
-                 logger.warning("Text processing skipped: vocab_table or max_seq_len not valid.")
+                 logger.warning("Text processing skipped in map_fn: vocab_table or max_seq_len not valid.")
 
 
              if use_text and processed_text_window is not None:
@@ -570,48 +664,51 @@ def run_pipeline(config):
 
 
         # Functions to create windowed datasets
-        def create_window_dataset(dataset_raw, window_size, window_shift, drop_remainder):
-             dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
-             dataset_flattened = dataset_windowed.flat_map(lambda window: window.batch(window_size))
-             return dataset_flattened
+        def create_window_dataset(dataset_raw, window_size, window_shift, drop_remainder, map_params):
+            if dataset_raw is None:
+                 return None # Cannot create window dataset from None
+
+            dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
+            dataset_flattened = dataset_windowed.flat_map(lambda window: window.batch(window_size)) # Collect elements in window
+
+            # Apply the processing function to each window
+            dataset_processed = dataset_flattened.map(
+                lambda input_elements, target_window: process_window_elements(input_elements, target_window, **map_params),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            return dataset_processed
 
         map_params = {
-            'use_text': config.get('use_text_input', False) and feature_cols_text and vocabulary_size is not None and vocabulary_size > 1, # Only use text if configured AND column created AND vocab valid
+            'use_text': config.get('use_text_input', False) and feature_cols_text and vocabulary_size is not None and vocabulary_size > 1,
             'max_seq_len': max_text_sequence_length,
             'vocab_table': vocabulary_table
         }
 
+        window_size = config['parameter_windowing']['window_size'] # Ensure window_size is defined
         window_shift = config['parameter_windowing'].get('window_shift', 1)
 
 
-        dataset_train_windowed = create_window_dataset(dataset_train_raw, window_size, window_shift, True)
-        dataset_train = dataset_train_windowed.map(
-            lambda input_elements, target_window: process_window_elements(input_elements, target_window, **map_params),
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).shuffle(config['data'].get('shuffle_buffer_size', 1000)
-        ).batch(config['training'].get('batch_size', 32)
-        ).cache().prefetch(tf.data.AUTOTUNE)
-        logger.info(f"Pipeline train tf.data: {dataset_train.element_spec}")
+        # Creating final tf.data pipelines
+        dataset_train = create_window_dataset(dataset_train_raw, window_size, window_shift, True, map_params)
+        if dataset_train is not None:
+             dataset_train = dataset_train.shuffle(config['data'].get('shuffle_buffer_size', 1000)
+             ).batch(config['training'].get('batch_size', 32)
+             ).cache().prefetch(tf.data.AUTOTUNE)
+             logger.info(f"Pipeline train tf.data: {dataset_train.element_spec}")
 
-        dataset_val_windowed = create_window_dataset(dataset_val_raw, window_size, window_shift, True)
-        dataset_val = dataset_val_windowed.map(
-             lambda input_elements, target_window: process_window_elements(input_elements, target_window, **map_params),
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).batch(config['training'].get('batch_size', 32)
-        ).cache().prefetch(tf.data.AUTOTUNE)
-        logger.info(f"Pipeline val tf.data: {dataset_val.element_spec}")
+        dataset_val = create_window_dataset(dataset_val_raw, window_size, window_shift, True, map_params)
+        if dataset_val is not None:
+             dataset_val = dataset_val.batch(config['training'].get('batch_size', 32)
+             ).cache().prefetch(tf.data.AUTOTUNE)
+             logger.info(f"Pipeline val tf.data: {dataset_val.element_spec}")
 
+        dataset_test = create_window_dataset(dataset_test_raw, window_size, window_shift, True, map_params)
+        if dataset_test is not None:
+             dataset_test = dataset_test.batch(config['training'].get('batch_size', 32)
+             ).prefetch(tf.data.AUTOTUNE)
+             logger.info(f"Pipeline test tf.data: {dataset_test.element_spec}")
 
-        dataset_test_windowed = create_window_dataset(dataset_test_raw, window_size, window_shift, True)
-        dataset_test = dataset_test_windowed.map(
-            lambda input_elements, target_window: process_window_elements(input_elements, target_window, **map_params),
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).batch(config['training'].get('batch_size', 32)
-        ).prefetch(tf.data.AUTOTUNE)
-        logger.info(f"Pipeline test tf.data: {dataset_test.element_spec}")
-
-
-        logger.info("Pipeline tf.data selesai dibuat.")
+        logger.info("Pipeline tf.data selesai dibuat (atau dilewati jika data tidak cukup).")
 
     except Exception as e:
         logger.error(f"Error selama Langkah 2: {e}")
@@ -660,6 +757,7 @@ def run_pipeline(config):
                 else: # Try loading as SavedModel if not .h5
                      model = tf.saved_model.load(load_path)
                      logger.info(f"Model berhasil dimuat dari format SavedModel: {load_path}.")
+                     # If loaded as SavedModel, it might not be a Keras Model object ready for .compile/.fit/.evaluate
                      if config['mode'] == 'incremental_learn' and not isinstance(model, tf.keras.Model):
                          logger.error("Model dimuat sebagai SavedModel tetapi bukan Keras Model. Tidak dapat melanjutkan pelatihan inkremental.")
                          model = None
@@ -700,12 +798,12 @@ def run_pipeline(config):
 
 
     # --- Langkah 4: Pelatihan Model (Belajar Mandiri/Hybrid/Otonom) ---
-    if config['mode'] in ['initial_train', 'incremental_learn'] and isinstance(model, tf.keras.Model):
+    if config['mode'] in ['initial_train', 'incremental_learn'] and isinstance(model, tf.keras.Model) and dataset_train is not None and dataset_val is not None:
         logger.info(f"Langkah 4: Memulai pelatihan model dalam mode {config['mode']}...")
         try:
             output_dir = config['output']['base_dir']
-            model_save_file = config['output'].get('model_save_file', 'saved_model/best_model.h5')
-            model_save_path_full = os.path.join(output_dir, model_save_file)
+            model_save_file_config = config['output'].get('model_save_file', 'saved_model/best_model.h5')
+            model_save_path_full = os.path.join(output_dir, model_save_file_config)
             scaler_save_dir_full = os.path.join(output_dir, config['output'].get('scaler_subdir', 'scalers'))
             tensorboard_log_dir_full = os.path.join(output_dir, config['output'].get('tensorboard_log_dir', 'logs/tensorboard'))
 
@@ -751,31 +849,31 @@ def run_pipeline(config):
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Lanjutkan ke langkah berikutnya meskipun ada error pelatihan
 
-    elif config['mode'] in ['initial_train', 'incremental_learn']:
+    elif config['mode'] in ['initial_train', 'incremental_learn'] and (dataset_train is None or dataset_val is None):
+         logger.warning(f"Mode '{config['mode']}' dipilih tetapi dataset train atau val tidak tersedia. Melewatkan pelatihan.")
+    elif config['mode'] in ['initial_train', 'incremental_learn'] and not isinstance(model, tf.keras.Model):
          logger.warning(f"Mode '{config['mode']}' dipilih tetapi model bukan instance tf.keras.Model. Melewatkan pelatihan.")
 
 
     # --- Langkah 5: Evaluation Model Akhir ---
     eval_results = None
-    if config['mode'] in ['initial_train', 'incremental_learn'] and isinstance(model, tf.keras.Model) and hasattr(model, 'evaluate'):
+    if config['mode'] in ['initial_train', 'incremental_learn'] and isinstance(model, tf.keras.Model) and hasattr(model, 'evaluate') and dataset_test is not None:
         logger.info("Langkah 5: Mengevaluasi model akhir...")
         try:
-            if 'dataset_test' in locals() and dataset_test is not None:
-                logger.info(f"Dataset test size untuk evaluasi: {tf.data.Dataset.cardinality(dataset_test).numpy()} batches")
-                eval_results = model.evaluate(dataset_test)
-                if hasattr(model, 'metrics_names'):
-                     logger.info(f"Hasil Evaluasi Akhir: {dict(zip(model.metrics_names, eval_results))}")
-                else:
-                     logger.info(f"Hasil Evaluasi Akhir (metrik tidak tersedia): {eval_results}")
-
+            logger.info(f"Dataset test size untuk evaluasi: {tf.data.Dataset.cardinality(dataset_test).numpy()} batches")
+            eval_results = model.evaluate(dataset_test)
+            if hasattr(model, 'metrics_names'):
+                 logger.info(f"Hasil Evaluasi Akhir: {dict(zip(model.metrics_names, eval_results))}")
             else:
-                 logger.warning("Dataset test tidak tersedia. Tidak dapat melakukan evaluasi.")
+                 logger.info(f"Hasil Evaluasi Akhir (metrik tidak tersedia): {eval_results}")
 
         except Exception as e:
             logger.error(f"Error selama Langkah 5: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Lanjutkan ke langkah berikutnya meskipun ada error evaluasi
-    elif config['mode'] in ['initial_train', 'incremental_learn']:
+    elif config['mode'] in ['initial_train', 'incremental_learn'] and dataset_test is None:
+         logger.warning("Mode training tetapi dataset test tidak tersedia. Melewatkan evaluasi.")
+    elif config['mode'] in ['initial_train', 'incremental_learn'] and (not isinstance(model, tf.keras.Model) or not hasattr(model, 'evaluate')):
          logger.warning("Mode training tetapi model bukan Keras Model atau tidak memiliki metode evaluate. Melewatkan evaluasi.")
     else:
          logger.info("Mode predict_only atau tidak ada model Keras. Melewatkan evaluasi pelatihan.")
@@ -793,10 +891,15 @@ def run_pipeline(config):
         tf.io.gfile.makedirs(os.path.dirname(os.path.join(output_dir, eval_results_file)))
         tf.io.gfile.makedirs(os.path.dirname(os.path.join(output_dir, predictions_file)))
 
+        # Handle TensorBoard log dir separately as it's used by a callback
+        tensorboard_log_dir_config = config['output'].get('tensorboard_log_dir', 'logs/tensorboard')
+        tensorboard_log_dir_full = os.path.join(output_dir, tensorboard_log_dir_config)
+        tf.io.gfile.makedirs(tensorboard_log_dir_full)
+
 
         if config['mode'] in ['initial_train', 'incremental_learn']:
-            model_save_file = config['output'].get('model_save_file', 'saved_model/best_model.h5')
-            model_save_path_full = os.path.join(output_dir, model_save_file)
+            model_save_file_config = config['output'].get('model_save_file', 'saved_model/best_model.h5')
+            model_save_path_full = os.path.join(output_dir, model_save_file_config)
             if os.path.exists(model_save_path_full):
                  logger.info(f"Model terbaik dalam format .h5 sudah tersimpan di Langkah 4: {model_save_path_full}.")
             else:
@@ -818,7 +921,7 @@ def run_pipeline(config):
                  vocab_file_path_full = os.path.join(output_dir, vocab_file_path_config)
                  tf.io.gfile.makedirs(os.path.dirname(vocab_file_path_full))
                  try:
-                    if 'unique_tokens_np' in locals() and unique_tokens_np is not None and unique_tokens_np.size > 0: # Check if unique_tokens_np is not empty
+                    if 'unique_tokens_np' in locals() and unique_tokens_np is not None and unique_tokens_np.size > 0:
                         with open(vocab_file_path_full, 'w', encoding='utf-8') as f:
                             for token in unique_tokens_np:
                                 f.write(token.decode('utf-8') + '\n')
@@ -833,6 +936,7 @@ def run_pipeline(config):
 
 
             # Menyimpan Hasil Evaluasi
+            # Only save eval results if evaluation was actually performed and results are available
             if eval_results is not None and model is not None and hasattr(model, 'metrics_names'):
                 logger.info(f"Menyimpan hasil evaluasi ke {os.path.join(output_dir, eval_results_file)}...")
                 eval_dict = dict(zip(model.metrics_names, eval_results))
@@ -844,64 +948,64 @@ def run_pipeline(config):
 
 
         # Menyimpan Prediksi (Output Hasil, termasuk Date)
-        if config['output'].get('save_predictions', False) and model is not None and hasattr(model, 'predict'):
-             if 'dataset_test' in locals() and dataset_test is not None:
-                logger.info(f"Membuat dan menyimpan prediksi ke {os.path.join(output_dir, predictions_file)}...")
-                predictions_scaled = model.predict(dataset_test)
+        # Only save predictions if configured, model is available for prediction, and test dataset is available
+        if config['output'].get('save_predictions', False) and model is not None and hasattr(model, 'predict') and dataset_test is not None:
+             logger.info(f"Membuat dan menyimpan prediksi ke {os.path.join(output_dir, predictions_file)}...")
+             try:
+                 predictions_scaled = model.predict(dataset_test)
 
-                if 'scaler_target' in locals() and scaler_target is not None:
-                    predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
+                 if 'scaler_target' in locals() and scaler_target is not None:
+                     predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
 
-                    df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols])
+                     df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols])
 
-                    # --- Menambahkan Kolom Date ke Hasil Prediksi ---
-                    if original_dates_for_alignment is not None and date_column_name is not None:
-                         window_size = config['parameter_windowing']['window_size']
-                         window_shift = config['parameter_windowing'].get('window_shift', 1)
-                         num_predictions = len(df_predictions) # Number of predictions is number of test windows
+                     # --- Menambahkan Kolom Date ke Hasil Prediksi ---
+                     if original_dates_for_alignment is not None and date_column_name is not None and 'test_split_start_idx_processed_df' in locals() and 'window_size' in locals() and 'window_shift' in locals():
+                          num_predictions = len(df_predictions)
 
-                         # Calculate the starting index in the original_dates_for_alignment series
-                         # This series has the same index as the df after initial dropna but before target shift.
-                         # The first data point in the test split of df_processed corresponds to index test_split_start_idx_processed_df in df_processed.
-                         # This index test_split_start_idx_processed_df also corresponds to the index in the original_dates_for_alignment series
-                         # that marks the start of the data *after* initial dropna.
-                         # The prediction for a window ending at original index `i` is for date at original index `i + window_size`.
-                         # The first window in test starts at index test_split_start_idx_processed_df in df_processed.
-                         # The original index corresponding to this first data point in df_processed is the index in original_dates_for_alignment at test_split_start_idx_processed_df.
-                         # The prediction for this window is for the date at index test_split_start_idx_processed_df + window_size in original_dates_for_alignment.
+                          date_indices_for_predictions_in_original = np.arange(0, num_predictions) * window_shift + (test_split_start_idx_processed_df + window_size)
 
-                         date_indices_for_predictions_in_original = np.arange(0, num_predictions) * window_shift + (test_split_start_idx_processed_df + window_size)
+                          valid_date_indices_in_original = date_indices_for_predictions_in_original[date_indices_for_predictions_in_original < len(original_dates_for_alignment)]
 
-                         # Ensure indices are within bounds of original_dates_for_alignment
-                         valid_date_indices_in_original = date_indices_for_predictions_in_original[date_indices_for_predictions_in_original < len(original_dates_for_alignment)]
+                          if len(valid_date_indices_in_original) == num_predictions:
+                              predicted_dates = original_dates_for_alignment.iloc[valid_date_indices_in_original].reset_index(drop=True)
+                              df_predictions.insert(0, date_column_name, predicted_dates)
+                              logger.info(f"Kolom '{date_column_name}' berhasil ditambahkan ke hasil prediksi.")
+                          else:
+                               logger.warning(f"Jumlah prediksi ({num_predictions}) tidak sesuai dengan jumlah tanggal yang valid ({len(valid_date_indices_in_original)}). Tidak dapat menambahkan kolom Date dengan benar.")
+                               logger.warning(f"Indeks tanggal asli yang dicoba: {date_indices_for_predictions_in_original}")
+                               logger.warning(f"Panjang original_dates_for_alignment: {len(original_dates_for_alignment)}")
 
-                         if len(valid_date_indices_in_original) == num_predictions:
-                             predicted_dates = original_dates_for_alignment.iloc[valid_date_indices_in_original].reset_index(drop=True)
-                             df_predictions.insert(0, date_column_name, predicted_dates)
-                             logger.info(f"Kolom '{date_column_name}' berhasil ditambahkan ke hasil prediksi.")
-                         else:
-                              logger.warning(f"Jumlah prediksi ({num_predictions}) tidak sesuai dengan jumlah tanggal yang valid ({len(valid_date_indices_in_original)}). Tidak dapat menambahkan kolom Date dengan benar.")
-                              logger.warning(f"Indeks tanggal asli yang dicoba: {date_indices_for_predictions_in_original}")
-                              logger.warning(f"Panjang original_dates_for_alignment: {len(original_dates_for_alignment)}")
-
-                    else:
-                         logger.warning(f"Kolom '{date_column_name}' asli tidak tersedia atau tidak ditemukan. Tidak dapat menambahkan kolom Date ke prediksi.")
+                     else:
+                          logger.warning(f"Variabel yang dibutuhkan untuk alignment tanggal (original_dates_for_alignment, date_column_name, split/window info) tidak tersedia. Tidak dapat menambahkan kolom Date ke prediksi.")
 
 
-                    predictions_file_full = os.path.join(output_dir, predictions_file)
-                    df_predictions.to_csv(predictions_file_full, index=False)
-                    logger.info(f"Prediksi berhasil disimpan ke {predictions_file_full}.")
+                     predictions_file_full = os.path.join(output_dir, predictions_file)
+                     df_predictions.to_csv(predictions_file_full, index=False)
+                     logger.info(f"Prediksi berhasil disimpan ke {predictions_file_full}.")
 
-                elif model is None or not hasattr(model, 'predict'):
-                     logger.warning("Model tidak tersedia atau tidak memiliki metode predict. Tidak dapat membuat prediksi.")
-                elif ('scaler_target' in locals() and scaler_target is None) or ('scaler_target' not in locals()):
-                     logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
+                 elif model is None or not hasattr(model, 'predict'): # This case already handled by outer if
+                      pass
+                 elif ('scaler_target' in locals() and scaler_target is None) or ('scaler_target' not in locals()):
+                      logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-             elif 'dataset_test' not in locals() or dataset_test is None:
-                  logger.warning("Dataset test tidak tersedia. Tidak dapat membuat prediksi.")
-             else:
-                  logger.info("Prediksi tidak disimpan karena save_predictions diatur ke False di konfigurasi.")
+              elif dataset_test is None: # This case already handled by outer if
+                   pass
+              # else: # This case handled by outer save_predictions check
+              #      pass
 
+             except Exception as e:
+                 logger.error(f"Error saat membuat atau menyimpan prediksi: {e}")
+                 logger.error(f"Traceback: {traceback.format_exc()}")
+
+
+        elif config['output'].get('save_predictions', False):
+             if model is None or not hasattr(model, 'predict'):
+                  logger.warning("save_predictions true tetapi model tidak tersedia atau tidak dapat membuat prediksi.")
+             elif dataset_test is None:
+                  logger.warning("save_predictions true tetapi dataset test tidak tersedia.")
+             # else: should not reach here
+         # else: save_predictions is False, log already handled
 
         logger.info("Langkah 6 selesai.")
 
@@ -927,14 +1031,14 @@ if __name__ == "__main__":
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        logger.info(f"Konfigurasi berhasil dimuat dari {config_path}")
+        logger.info(f"Konfigurasi berhasil dimuat dari {os.path.abspath(config_path)}")
 
     except FileNotFoundError:
-        logger.error(f"File konfigurasi tidak ditemukan di {config_path}. Pastikan path benar di workflow atau command-line.")
+        logger.error(f"File konfigurasi tidak ditemukan di {os.path.abspath(config_path)}.")
         exit(1)
 
     except yaml.YAMLError as e:
-        logger.error(f"Error mem-parsing file konfigurasi YAML dari {config_path}: {e}")
+        logger.error(f"Error mem-parsing file konfigurasi YAML dari {os.path.abspath(config_path)}: {e}")
         exit(1)
 
     if config:
@@ -943,11 +1047,13 @@ if __name__ == "__main__":
         missing_keys = [key for key in essential_keys if key not in config or config[key] is None]
 
         if missing_keys:
-            logger.error(f"File konfigurasi ({config_path}) tidak lengkap atau rusak. Kunci utama yang hilang atau kosong: {missing_keys}")
+            logger.error(f"File konfigurasi ({os.path.abspath(config_path)}) tidak lengkap atau rusak. Kunci utama yang hilang atau kosong: {missing_keys}")
             logger.error("Pastikan file konfigurasi YAML memiliki semua bagian utama (data, model, training, output, parameter_windowing, seed) dan tidak kosong.")
             exit(1)
 
         # --- Validasi Format Kunci Utama (Harus Dictionary) ---
+        # Check if the value associated with the key is the expected type (e.g., dict)
+        # Use .get() before isinstance check to avoid KeyError if a top-level key is missing (redundant due to essential_keys check, but safer)
         if not isinstance(config.get('data'), dict):
              logger.error("Kunci 'data' ada tetapi bukan dictionary. Pastikan format file konfigurasi benar.")
              exit(1)
@@ -975,10 +1081,31 @@ if __name__ == "__main__":
                  output_config['vocabulary_file'] = os.path.join(base_dir, scaler_subdir, 'vocabulary.txt')
                  logger.info(f"Menambahkan path default vocabulary_file: {output_config['vocabulary_file']}")
 
+        # Add default for model_save_file
         if 'model_save_file' not in output_config:
-             model_subdir = output_config.get('model_subdir', 'saved_model')
-             output_config['model_save_file'] = os.path.join(base_dir, model_subdir, 'best_model.h5')
+             model_subdir = output_config.get('model_subdir', 'saved_model') # Default subdir if not specified
+             output_config['model_save_file'] = os.path.join(base_dir, model_subdir, 'best_model.h5') # Default filename/format
              logger.info(f"Menambahkan path default model_save_file: {output_config['model_save_file']}")
+
+        # Add default for tensorboard_log_dir
+        if 'tensorboard_log_dir' not in output_config:
+             output_config['tensorboard_log_dir'] = os.path.join(base_dir, 'logs/tensorboard')
+             logger.info(f"Menambahkan path default tensorboard_log_dir: {output_config['tensorboard_log_dir']}")
+
+        # Add default for scaler_subdir
+        if 'scaler_subdir' not in output_config:
+            output_config['scaler_subdir'] = os.path.join(base_dir, 'scalers')
+            logger.info(f"Menambahkan path default scaler_subdir: {output_config['scaler_subdir']}")
+
+        # Add default for eval_results_file
+        if 'eval_results_file' not in output_config:
+             output_config['eval_results_file'] = os.path.join(base_dir, 'evaluation_metrics/eval_results.json')
+             logger.info(f"Menambahkan path default eval_results_file: {output_config['eval_results_file']}")
+
+        # Add default for predictions_file
+        if 'predictions_file' not in output_config:
+             output_config['predictions_file'] = os.path.join(base_dir, 'predictions/predictions.csv')
+             logger.info(f"Menambahkan path default predictions_file: {output_config['predictions_file']}")
 
 
         # --- Validasi Mode dan load_path ---
@@ -987,15 +1114,25 @@ if __name__ == "__main__":
                  logger.error(f"Mode '{config['mode']}' dipilih, tetapi 'model.load_path' tidak ada/kosong di konfigurasi.")
                  exit(1)
             # Optional: Warning if load_path doesn't match expected save format (.h5)
-            # Assumes model_save_file default/configured path dictates the format
-            model_save_file_expected = output_config.get('model_save_file', 'saved_model/best_model.h5')
-            if model_save_file_expected.endswith('.h5'):
+            model_save_file_expected = output_config.get('model_save_file', 'saved_model/best_model.h5') # Get default/configured save path
+            if model_save_file_expected.lower().endswith('.h5'): # Check if the configured save format is H5
                  if not config['model']['load_path'].lower().endswith('.h5'):
                       logger.warning(f"Mode '{config['mode']}' dipilih dan model akan disimpan sebagai .h5, tetapi model.load_path ({config['model']['load_path']}) tidak berakhir dengan .h5. Pastikan path memuat file .h5 yang benar.")
             # If the save format were SavedModel (directory)
-            # else: # Assumes SavedModel is saved
-            #      if config['model']['load_path'].lower().endswith('.h5'):
-            #           logger.warning(f"Mode '{config['mode']}' dipilih dan model akan disimpan sebagai SavedModel, tetapi model.load_path ({config['model']['load_path']}) berakhir dengan .h5. Pastikan path memuat direktori SavedModel yang benar.")
+            # else: # Assuming SavedModel is saved based on config or default
+            #      # Check if load_path looks like a directory (doesn't end with a common file extension)
+            #      common_extensions = ['.h5', '.pkl', '.json', '.csv', '.txt']
+            #      if any(config['model']['load_path'].lower().endswith(ext) for ext in common_extensions):
+            #           logger.warning(f"Mode '{config['mode']}' dipilih dan model akan disimpan sebagai SavedModel (direktori), tetapi model.load_path ({config['model']['load_path']}) terlihat seperti file. Pastikan path memuat direktori SavedModel yang benar.")
+
+
+        # --- Validasi Data Config Minimum ---
+        if not config['data'].get('feature_cols_numeric') or not isinstance(config['data']['feature_cols_numeric'], list):
+             logger.error("Konfigurasi 'data.feature_cols_numeric' tidak ada, kosong, atau bukan list.")
+             exit(1)
+        if 'parameter_windowing' not in config or not isinstance(config['parameter_windowing'].get('window_size'), int) or config['parameter_windowing']['window_size'] <= 0:
+             logger.error("Konfigurasi 'parameter_windowing.window_size' tidak ada, bukan integer positif, atau <= 0.")
+             exit(1)
 
 
         # --- Jalankan Pipeline Utama ---
