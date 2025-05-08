@@ -989,8 +989,8 @@ def run_pipeline(config):
                  elif ('scaler_target' in locals() and scaler_target is None) or ('scaler_target' not in locals()):
                       logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
 
-              elif dataset_test is None: # This case already handled by outer if
-                   pass
+                 elif dataset_test is None: # This case already handled by outer if
+                      pass
               # else: # This case handled by outer save_predictions check
               #      pass
 
