@@ -1,5 +1,5 @@
 # requirements.txt
-tensorflow>=2.x
+tensorflow>=2.0.0
 pandas
 numpy
 scikit-learn
