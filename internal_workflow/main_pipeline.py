@@ -20,12 +20,12 @@ Fitur Termasuk:
 - Kompilasi model.
 - Pelatihan model (mode initial_train atau incremental_learn) dengan callbacks.
 - Evaluasi model akhir.
-- Penyimpanan model terlatih (SavedModel), scaler, hasil evaluasi, dan prediksi.
+- Penyimpanan model terlatih (.h5), scaler, hasil evaluasi, dan prediksi.
 - Penggunaan API aritmatika, baca/tulis, dan fondasi belajar mandiri/hybrid.
 
 Untuk menjalankan di GitHub Actions:
-1. Pastikan kode ini dan quantai_config.yaml ada di repositori.
-2. Buat file requirements.txt dengan dependensi yang dibutuhkan.
+1. Pastikan kode ini, quantai_config.yaml, requirements.txt ada di repositori.
+2. Pastikan data input ada di path yang sesuai di repositori.
 3. Buat file workflow GitHub Actions (.github/workflows/train_pipeline.yml).
 4. Workflow akan menjalankan script ini dengan path ke file config sebagai argumen.
 """
@@ -40,7 +40,6 @@ import joblib
 import logging
 import json # Untuk menyimpan hasil evaluasi/prediksi dalam JSON
 import argparse # Untuk membaca argumen command-line
-import re # Import modul regex untuk pembersihan string yang lebih kuat
 
 # --- Konfigurasi Global ---
 # Path ke file konfigurasi akan diberikan melalui argumen command-line
@@ -67,7 +66,8 @@ def generate_analysis_text(row):
     low = row.get('Low', None)
 
     # Pastikan nilai ada dan bukan NaN sebelum perbandingan/aritmatika
-    if pivot is not None and close is not None and not pd.isna(pivot) and not pd.isna(close):
+    # Menggunakan Aritmatika untuk perbandingan
+    if pivot is not None and close is not None and pd.notna(pivot) and pd.notna(close):
         if close > pivot:
             text.append(f"Close {close:.2f} di atas Pivot {pivot:.2f}, bullish.")
         elif close < pivot:
@@ -75,12 +75,12 @@ def generate_analysis_text(row):
         else:
             text.append(f"Close {close:.2f} di sekitar Pivot {pivot:.2f}, netral.")
 
-    if r1 is not None and high is not None and not pd.isna(r1) and not pd.isna(high):
+    if r1 is not None and high is not None and pd.notna(r1) and pd.notna(high):
          # Menggunakan Aritmatika untuk perbandingan
         if high > r1:
             text.append(f"High {high:.2f} menembus R1 {r1:.2f}, potensi naik.")
 
-    if s1 is not None and low is not None and not pd.isna(s1) and not pd.isna(low):
+    if s1 is not None and low is not None and pd.notna(s1) and pd.notna(low):
          # Menggunakan Aritmatika untuk perbandingan
         if low < s1:
             text.append(f"Low {low:.2f} menembus S1 {s1:.2f}, potensi turun.")
@@ -98,66 +98,31 @@ def process_text_for_model(text_tensor, max_sequence_length, vocabulary_table):
     Contoh: tokenisasi, lookup ID, padding.
     """
     # Menggunakan API TensorFlow Strings
-    tokens = tf.strings.split(text_tensor) # Returns RaggedTensor
+    tokens = tf.strings.split(text_tensor) # Memecah string menjadi token
 
     # Menggunakan API TensorFlow Lookup
-    # Converting string tokens to integer IDs
-    token_ids = vocabulary_table.lookup(tokens) # Returns RaggedTensor
+    # Mengonversi token string menjadi ID integer
+    # Use a default value for OOV tokens, e.g., the last index (corresponding to OOV bucket)
+    token_ids = vocabulary_table.lookup(tokens)
 
-    # Padding or truncating the sequence of token IDs
-    # Gunakan tf.ragged.to_tensor() untuk mengatasi AttributeError pada SymbolicTensor
-    padded_token_ids = tf.ragged.to_tensor(token_ids, default_value=0, shape=(max_sequence_length,))
+    # Padding atau pemotongan sekuens token ID
+    # Menggunakan API TensorFlow RaggedTensor untuk padding
+    # Konversi RaggedTensor ke DenseTensor dengan padding
+    # Menggunakan API Aritmatika untuk menghitung ukuran padding/pemotongan jika diperlukan
+    # Misalnya: tf.minimum(tf.size(token_ids), max_sequence_length)
+    # Note: RaggedTensor.to_tensor automatically handles padding to the max size in the batch,
+    # but we can also pad to a fixed shape. Let's use a fixed shape for consistency.
+    padded_token_ids = token_ids.to_tensor(default_value=0) # Pad with 0 (assuming 0 is not a valid token ID)
+    # If we need a fixed shape regardless of batch max, we can slice/pad explicitly:
+    # current_len = tf.shape(padded_token_ids)[0]
+    # padded_token_ids = tf.pad(padded_token_ids, [[0, tf.maximum(0, max_sequence_length - current_len)]], constant_values=0)
+    # padded_token_ids = padded_token_ids[:max_sequence_length]
+
+    # Menggunakan API Aritmatika jika ada operasi numerik pada ID token
+    # Contoh sederhana: menambahkan 1 ke setiap ID (tidak umum, hanya ilustrasi)
+    # padded_token_ids = tf.add(padded_token_ids, 1)
 
     return padded_token_ids
-
-# Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
-@tf.function # Keep this decorator for the main element processing function
-def process_dataset_element(inputs, target_elem):
-    """Memproses elemen dataset (termasuk teks) sebelum windowing."""
-    processed_text = None # Default if text is not used
-    # Cek apakah input adalah tuple (numeric, text) atau hanya numeric
-    if isinstance(inputs, tuple) and len(inputs) == 2:
-        numeric_elem, text_elem = inputs
-        # Process text using the corrected function
-        processed_text = process_text_for_model(text_elem, config['data']['max_text_sequence_length'], vocabulary_table)
-        processed_inputs = (numeric_elem, processed_text)
-    else:
-        numeric_elem = inputs
-        processed_inputs = numeric_elem
-
-    return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
-
-
-def create_tf_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input_actual, max_text_sequence_length, vocabulary_table, shuffle=False, batch_size=None):
-    """
-    Membuat pipeline tf.data dengan pemrosesan elemen, windowing, batching, dll.
-    """
-    # Terapkan pemrosesan elemen (termasuk teks) sebelum windowing
-    # Gunakan use_text_input_actual untuk menentukan apakah input adalah tuple atau tidak
-    dataset_processed_elements = dataset_raw.map(
-        lambda inputs, target_elem: process_dataset_element(inputs, target_elem),
-        num_parallel_calls=tf.data.AUTOTUNE
-    )
-
-    # Kemudian terapkan windowing
-    dataset_windowed = dataset_processed_elements.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
-
-    # Kemudian flat_map untuk menggabungkan window dan batch
-    dataset_batched_windows = dataset_windowed.flat_map(lambda window: window.batch(window_size))
-
-    # Terapkan shuffle jika diminta (hanya untuk pelatihan)
-    if shuffle:
-        dataset_batched_windows = dataset_batched_windows.shuffle(config['data']['shuffle_buffer_size'])
-
-    # Terapkan batching akhir
-    if batch_size:
-        dataset_batched_windows = dataset_batched_windows.batch(batch_size)
-
-    # Cache dan prefetch
-    dataset_batched_windows = dataset_batched_windows.cache() # Cache setelah windowing dan batching window
-    dataset_batched_windows = dataset_batched_windows.prefetch(tf.data.AUTOTUNE)
-
-    return dataset_batched_windows
 
 
 def build_quantai_model(config, numeric_input_shape, text_input_shape, num_target_features, vocabulary_size=None):
@@ -193,20 +158,24 @@ def build_quantai_model(config, numeric_input_shape, text_input_shape, num_targe
         x_numeric = tf.keras.layers.Dropout(config['model']['architecture']['dropout_rate'])(x_numeric)
 
     # Merangkum sekuens numerik
-     # Menggunakan API Keras Layers: GlobalAveragePooling1D
-    x_numeric = tf.keras.layers.GlobalAveragePooling1D()(x_numeric)
+     # Menggunakan API Keras Layers: GlobalAveragePooling1D atau Flatten jika Conv1D last layer, atau GlobalAveragePooling1D setelah GRU
+    # Jika GRU return_sequences=True, butuh pooling/flatten sebelum Dense
+    x_numeric = tf.keras.layers.GlobalAveragePooling1D()(x_numeric) # Pooling output GRU
+    # Jika ingin menggunakan output terakhir GRU saja (GRU return_sequences=False), hapus pooling
 
 
     # Jalur Pemrosesan Teks (jika digunakan)
     if config['use_text_input'] and vocabulary_size is not None:
+        # Input teks adalah sekuens ID integer
         # Menggunakan API Keras Layers: Input
         text_input = tf.keras.layers.Input(shape=text_input_shape, name='text_input', dtype=tf.int64) # Input ID integer
 
         # Menggunakan API Keras Layers: Embedding
         # Menggunakan API Aritmatika di dalam layer Embedding
-        x_text = tf.keras.layers.Embedding(input_dim=vocabulary_size,
+        # Masking 0 ID jika 0 digunakan untuk padding
+        x_text = tf.keras.layers.Embedding(input_dim=vocabulary_size, # Vocabulary size termasuk OOV
                                            output_dim=config['model']['architecture']['embedding_dim'],
-                                           mask_zero=True # Penting jika ada padding nol
+                                           mask_zero=True # Penting jika 0 digunakan untuk padding
                                           )(text_input)
 
         # Opsi: Tambahkan GRU atau Conv1D pada embedding teks
@@ -244,7 +213,7 @@ def run_pipeline(config):
     """
     logger.info("Memulai pipeline QuantAI...")
 
-    # --- Langkah 0.5: Setup Hardware (Dilakukan di runner GitHub Actions) ---
+    # --- Langkah 0.5: Setup Hardware ---
     # Konfigurasi TensorFlow dan Hardware:
     try:
         logger.info("Mengkonfigurasi TensorFlow dan Hardware...")
@@ -287,14 +256,12 @@ def run_pipeline(config):
         # Menggunakan Pandas untuk membaca data (Membaca)
         data_path = config['data']['raw_path']
         if not os.path.exists(data_path):
-             logger.error(f"File data tidak ditemukan di {data_path}. Pastikan path benar dan file ada di repositori/runner.")
+             logger.error(f"File data tidak ditemukan di {os.path.abspath(data_path)}. Pastikan path benar dan file ada.")
+             # Di GitHub Actions, ini akan menyebabkan workflow gagal.
              return # Hentikan pipeline jika file data tidak ada
 
         if data_path.endswith('.csv'):
-            # Gunakan argumen sep=';' untuk membaca file CSV dengan pemisah titik koma
-            # Tambahkan argumen decimal='.' karena header menunjukkan titik sebagai pemisah desimal
-            # Jika data Anda menggunakan koma sebagai pemisah desimal, ganti decimal='.' menjadi decimal=','
-            df = pd.read_csv(data_path, sep=';', decimal='.')
+            df = pd.read_csv(data_path)
         elif data_path.endswith('.json'):
             df = pd.read_json(data_path)
         else:
@@ -302,189 +269,132 @@ def run_pipeline(config):
 
         logger.info(f"Data mentah dimuat dari {data_path}. Jumlah baris: {len(df)}")
 
-        # Diagnostik: Log nama kolom dan tipe data setelah membaca CSV
-        logger.info(f"Kolom setelah membaca CSV: {df.columns.tolist()}")
-        logger.info(f"Tipe data setelah membaca CSV: {df.dtypes}")
-        # Diagnostik: Log beberapa nilai pertama dari kolom harga sebagai string
-        price_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in price_cols:
-            if col in df.columns and not df.empty:
-                 logger.info(f"Contoh nilai string di kolom '{col}': {df[col].astype(str).head().tolist()}")
+        # Pastikan data terurut berdasarkan Date jika ada (Opsional tapi direkomendasikan)
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date']) # Konversi ke datetime
+            df.sort_values(by='Date', inplace=True)
+            logger.info("Data diurutkan berdasarkan kolom 'Date'.")
+            # Opsi: Set 'Date' sebagai index jika diinginkan, tapi pastikan kolom 'Date' tidak menjadi fitur input
+            # df.set_index('Date', inplace=True)
 
 
-        # Pembersihan data awal (menghapus baris dengan NaN)
-        # Jangan dropna dulu, lakukan pembersihan string pada kolom harga dulu
-        # initial_rows = len(df)
-        # df.dropna(inplace=True)
-        # if len(df) < initial_rows:
-        #     logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN.")
+        # Pembersihan data awal
+        initial_rows = len(df)
+        # Hapus baris dengan NaN di kolom harga atau kolom fitur numerik yang *dipastikan* ada
+        cols_to_check_nan = config['data']['feature_cols_numeric'] # Pastikan ini termasuk OHLCV
+        df.dropna(subset=cols_to_check_nan, inplace=True)
+        if len(df) < initial_rows:
+            logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di kolom fitur numerik utama.")
+
 
         # Pastikan kolom harga adalah numerik
-        # price_cols = ['Open', 'High', 'Low', 'Close', 'Volume'] # Sudah didefinisikan di atas
-        for col in price_cols:
-            if col in df.columns:
-                # PERBAIKAN: Bersihkan string dari karakter non-numerik sebelum konversi
-                # Ini adalah pembersihan yang lebih kuat: Hapus semua karakter kecuali digit, titik, dan tanda minus (untuk angka negatif)
-                # Jika koma digunakan sebagai pemisah desimal, ganti titik dengan koma di regex
-                df[col] = df[col].astype(str).str.replace(r'[^\d\.\-]', '', regex=True)
-                # Jika koma digunakan sebagai pemisah desimal, dan titik sebagai pemisah ribuan,
-                # Anda mungkin perlu logika yang lebih kompleks di sini.
-                # Contoh: Mengganti titik dengan string kosong, lalu koma dengan titik
-                # df[col] = df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-
-
-                # Menggunakan Pandas to_numeric
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            else:
-                 # Diagnostik: Log jika kolom harga tidak ditemukan setelah membaca CSV
-                 logger.warning(f"Kolom harga '{col}' tidak ditemukan di DataFrame setelah membaca CSV.")
-
-
-        # Hapus baris jika kolom harga jadi NaN setelah konversi (karena pembersihan tidak sempurna atau memang ada data non-numerik)
-        initial_rows = len(df)
-        df.dropna(subset=price_cols, inplace=True)
-        if len(df) < initial_rows:
-             logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di kolom harga setelah konversi numerik.")
-
-        # Jika setelah pembersihan DataFrame kosong, hentikan
-        if df.empty:
-             logger.error("DataFrame kosong setelah pembersihan data awal. Tidak dapat melanjutkan.")
-             return # Hentikan pipeline jika data kosong
-
-        # Diagnostik: Log nama kolom dan tipe data setelah pembersihan dan konversi numerik
-        logger.info(f"Kolom setelah pembersihan numerik: {df.columns.tolist()}")
-        logger.info(f"Tipe data setelah pembersihan numerik: {df.dtypes}")
-        # Diagnostik: Log beberapa nilai pertama dari kolom harga setelah konversi numerik
-        for col in price_cols:
-            if col in df.columns and not df.empty:
-                 logger.info(f"Contoh nilai numerik di kolom '{col}': {df[col].head().tolist()}")
+        # already handled by dropna(subset=feature_cols_numeric) assuming OHLCV are in feature_cols_numeric
+        # price_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        # for col in price_cols:
+        #     if col in df.columns:
+        #         df[col] = pd.to_numeric(df[col], errors='coerce')
+        # initial_rows = len(df)
+        # df.dropna(subset=price_cols, inplace=True) # Hapus baris jika kolom harga jadi NaN setelah konversi
+        # if len(df) < initial_rows:
+        #      logger.warning(f"Menghapus {initial_rows - len(df)} baris setelah konversi numerik.")
 
 
         # Feature Engineering (Menggunakan Aritmatika)
         # Contoh: Menghitung Pivot Points
         logger.info("Menghitung Pivot Points...")
         # Menggunakan Aritmatika Pandas Series
-        # Pastikan kolom yang dibutuhkan ada sebelum diakses
-        required_pivot_cols = ['High', 'Low', 'Close']
-        if all(col in df.columns for col in required_pivot_cols):
-             df['Pivot'] = (df['High'] + df['Low'] + df['Close']) / 3
-             df['R1'] = 2 * df['Pivot'] - df['Low']
-             df['S1'] = 2 * df['Pivot'] - df['High']
-             df['R2'] = df['Pivot'] + (df['High'] - df['Low'])
-             df['S2'] = df['Pivot'] - (df['High'] - df['Low'])
-             df['R3'] = df['Pivot'] + 2 * (df['High'] - df['Low'])
-             df['S3'] = df['Pivot'] - 2 * (df['High'] - df['Low'])
-             # Tambahkan R4/R5, S4/S5 jika perlu
-             logger.info("Pivot Points dan Support/Resistance dihitung.")
-             # Tambahkan kolom indikator ke daftar kolom yang mungkin ada
-             indicator_cols = [col for col in df.columns if col.startswith('R') or col.startswith('S') or col == 'Pivot']
+        # Pastikan OHLC ada setelah dropna
+        if all(col in df.columns for col in ['High', 'Low', 'Close']):
+            df['Pivot'] = (df['High'] + df['Low'] + df['Close']) / 3
+            df['R1'] = 2 * df['Pivot'] - df['Low']
+            df['S1'] = 2 * df['Pivot'] - df['High']
+            df['R2'] = df['Pivot'] + (df['High'] - df['Low'])
+            df['S2'] = df['Pivot'] - (df['High'] - df['Low'])
+            df['R3'] = df['Pivot'] + 2 * (df['High'] - df['Low'])
+            df['S3'] = df['Pivot'] - 2 * (df['High'] - df['Low'])
+            # Tambahkan R4/R5, S4/S5 jika perlu
+            logger.info("Perhitungan Pivot Points selesai.")
         else:
-             logger.warning(f"Kolom yang dibutuhkan untuk Pivot Points ({required_pivot_cols}) tidak lengkap. Tidak dapat menghitung indikator.")
-             indicator_cols = [] # Kosongkan daftar indikator jika kolom dasar tidak ada
+             logger.warning("Kolom OHLC tidak lengkap untuk menghitung Pivot Points.")
 
 
         # Menyiapkan Target (HLC Selanjutnya)
-        logger.info(f"Menyiapkan target HLC selanjutnya dengan shift {config['parameter_windowing']['window_size']}...")
-        # Menggunakan Pandas shift
-        required_target_cols_base = ['High', 'Low', 'Close']
-        target_cols = ['High_Next', 'Low_Next', 'Close_Next']
-        if all(col in df.columns for col in required_target_cols_base):
-             df['High_Next'] = df['High'].shift(-config['parameter_windowing']['window_size'])
-             df['Low_Next'] = df['Low'].shift(-config['parameter_windowing']['window_size'])
-             df['Close_Next'] = df['Close'].shift(-config['parameter_windowing']['window_size'])
-             logger.info("Target HLC selanjutnya disiapkan.")
-        else:
-             logger.warning(f"Kolom yang dibutuhkan untuk target ({required_target_cols_base}) tidak lengkap. Tidak dapat menyiapkan target.")
-             target_cols = [] # Kosongkan daftar target jika kolom dasar tidak ada
-
+        logger.info(f"Menyiapkan target HLC selanjutnya dengan shift -{config['parameter_windowing']['window_size']}...")
+        # Menggunakan Pandas shift. Shift negatif menarik data masa depan ke baris saat ini.
+        # Jendela input size=N di baris T akan memprediksi target di baris T+N.
+        # Jadi, target di baris T haruslah HLC di baris T+N.
+        # shift(-N) menggeser nilai dari N baris ke bawah ke baris saat ini.
+        df['High_Next'] = df['High'].shift(-config['parameter_windowing']['window_size'])
+        df['Low_Next'] = df['Low'].shift(-config['parameter_windowing']['window_size'])
+        df['Close_Next'] = df['Close'].shift(-config['parameter_windowing']['window_size'])
 
         # Menghapus baris terakhir yang memiliki NaN setelah shift
+        # Jumlah baris yang dihapus akan sama dengan window_size
         initial_rows = len(df)
-        # Pastikan target_cols ada di df.columns sebelum dropna
-        target_cols_present = [col for col in target_cols if col in df.columns]
-        if target_cols_present:
-             df.dropna(subset=target_cols_present, inplace=True)
-             if len(df) < initial_rows:
-                  logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di target setelah shift.")
-        else:
-             logger.warning("Tidak ada kolom target yang tersedia untuk dropna.")
-
-
-        # Jika setelah menyiapkan target DataFrame kosong, hentikan
-        if df.empty:
-             logger.error("DataFrame kosong setelah menyiapkan target. Tidak dapat melanjutkan.")
-             return # Hentikan pipeline jika data kosong
+        df.dropna(subset=['High_Next', 'Low_Next', 'Close_Next'], inplace=True)
+        if len(df) < initial_rows:
+             logger.warning(f"Menghapus {initial_rows - len(df)} baris dengan NaN di target setelah shift (-{config['parameter_windowing']['window_size']}).")
 
 
         # Membuat Fitur Teks Deskriptif (Menulis Teks ke Kolom)
         if config['use_text_input']:
             logger.info("Membuat fitur teks deskriptif...")
             # Menggunakan Pandas apply dan fungsi kustom generate_analysis_text
-            # Pastikan kolom yang dibutuhkan oleh generate_analysis_text ada
-            required_analysis_cols = ['Pivot', 'Close', 'R1', 'S1', 'High', 'Low']
-            # Cek apakah semua kolom yang dibutuhkan untuk analisis teks ada di DataFrame
-            if all(col in df.columns for col in required_analysis_cols):
-                 df['Analysis_Text'] = df.apply(generate_analysis_text, axis=1)
-                 if not df.empty:
-                      logger.info(f"Contoh teks analisis: {df['Analysis_Text'].iloc[0]}")
-                 else:
-                      # Ini seharusnya sudah ditangani oleh cek df.empty di atas
-                      logger.warning("DataFrame kosong saat membuat teks analisis.")
+            # Pastikan kolom yang dibutuhkan generate_analysis_text ada setelah dropna
+            if all(col in df.columns for col in ['High', 'Low', 'Close', 'Pivot', 'R1', 'S1']): # Sesuaikan dengan kolom yang dipakai di generate_analysis_text
+                df['Analysis_Text'] = df.apply(generate_analysis_text, axis=1)
+                if not df.empty:
+                     logger.info(f"Contoh teks analisis: {df['Analysis_Text'].iloc[0]}")
+                else:
+                     logger.warning("DataFrame kosong setelah preprocessing. Tidak dapat membuat teks analisis.")
             else:
-                 # Jika kolom untuk analisis teks tidak lengkap, nonaktifkan input teks
-                 logger.warning(f"Kolom yang dibutuhkan untuk teks analisis ({required_analysis_cols}) tidak lengkap. Nonaktifkan input teks.")
-                 config['use_text_input'] = False # Nonaktifkan input teks jika kolom tidak ada
+                 logger.warning("Kolom yang dibutuhkan untuk generate_analysis_text tidak lengkap setelah preprocessing.")
 
 
         # Identifikasi Fitur Input dan Target
         # Pastikan kolom indikator yang dihitung juga masuk fitur numerik
-        # Hanya sertakan indikator yang benar-benar ada di DataFrame
-        indicator_cols_present = [col for col in indicator_cols if col in df.columns] # Identifikasi ulang indikator yang ada
-        # Gabungkan kolom numerik dari config dengan indikator yang ada
-        # Gunakan set untuk menghindari duplikat dan list comprehension untuk mempertahankan urutan (opsional)
-        feature_cols_numeric_base = config['data']['feature_cols_numeric']
-        # Pastikan kolom base numerik dari config ada di DataFrame
-        feature_cols_numeric_base_present = [col for col in feature_cols_numeric_base if col in df.columns]
+        indicator_cols = [col for col in df.columns if col.startswith(('Piv', 'R', 'S'))] # Match 'Pivot', 'R*', 'S*'
+        # Ambil feature_cols_numeric dari config, lalu tambahkan indicator_cols jika belum ada
+        feature_cols_numeric = list(config['data']['feature_cols_numeric']) # Mulai dengan kolom dari config
+        for col in indicator_cols:
+            if col not in feature_cols_numeric:
+                feature_cols_numeric.append(col) # Tambahkan kolom indikator yang dihitung
 
-        feature_cols_numeric = list(dict.fromkeys(feature_cols_numeric_base_present + indicator_cols_present)) # Gabungkan dan hapus duplikat
+        feature_cols_text = ['Analysis_Text'] if config['use_text_input'] and 'Analysis_Text' in df.columns else []
+        target_cols = ['High_Next', 'Low_Next', 'Close_Next'] # Pastikan ini ada setelah shift dan dropna
 
-        # Filter feature_cols_numeric untuk hanya menyertakan kolom yang ada di DataFrame (ini redundant tapi aman)
-        feature_cols_numeric_present = [col for col in feature_cols_numeric if col in df.columns]
+        # Filter DataFrame hanya untuk kolom yang relevan sebelum konversi ke NumPy
+        # Ini memastikan urutan kolom konsisten
+        all_relevant_cols = feature_cols_numeric + feature_cols_text + target_cols + (['Date'] if 'Date' in df.columns else [])
+        df_processed = df[all_relevant_cols].copy() # Buat salinan untuk menghindari SettingWithCopyWarning
 
-        # Cek apakah 'Analysis_Text' berhasil dibuat sebelum menambahkannya ke feature_cols_text
-        feature_cols_text = ['Analysis_Text'] if config.get('use_text_input', False) and 'Analysis_Text' in df.columns else []
-        target_cols_present = [col for col in target_cols if col in df.columns] # Gunakan target_cols yang sudah disiapkan
 
         # Konversi ke NumPy Arrays
         # Menggunakan NumPy untuk konversi
-        # Pastikan hanya kolom yang dipilih yang diambil
-        if not df.empty and feature_cols_numeric_present and target_cols_present:
-            data_numeric = df[feature_cols_numeric_present].values.astype(np.float32)
-            data_text = df[feature_cols_text].values.flatten().astype(str) if feature_cols_text else np.array([], dtype=str)
-            data_target = df[target_cols_present].values.astype(np.float32)
+        if not df_processed.empty:
+            # Konversi hanya kolom fitur dan target yang relevan
+            data_numeric = df_processed[feature_cols_numeric].values.astype(np.float32)
+            data_text = df_processed[feature_cols_text].values.flatten().astype(str) if feature_cols_text else np.array([], dtype=str)
+            data_target = df_processed[target_cols].values.astype(np.float32)
 
-            logger.info(f"Data numerik shape: {data_numeric.shape}")
-            logger.info(f"Data teks shape: {data_text.shape}")
-            logger.info(f"Data target shape: {data_target.shape}")
+            logger.info(f"Final data numerik shape: {data_numeric.shape}")
+            logger.info(f"Final data teks shape: {data_text.shape}")
+            logger.info(f"Final data target shape: {data_target.shape}")
         else:
-            logger.error("DataFrame kosong atau kolom fitur/target tidak tersedia setelah preprocessing. Tidak dapat melanjutkan.")
-            # Diagnostik: Log kolom yang tersedia vs yang dicari
-            logger.error(f"Kolom tersedia di DataFrame: {df.columns.tolist()}")
-            logger.error(f"Kolom numerik yang dicari: {feature_cols_numeric_present}")
-            logger.error(f"Kolom teks yang dicari: {feature_cols_text}")
-            logger.error(f"Kolom target yang dicari: {target_cols_present}")
-
-            return # Hentikan pipeline jika data kosong atau kolom tidak lengkap
+            logger.error("DataFrame kosong setelah preprocessing. Tidak dapat melanjutkan.")
+            return # Hentikan pipeline jika data kosong setelah preprocessing
 
 
         # Membagi Data (menggunakan slicing NumPy)
-        total_samples = len(df)
-        train_size = int(total_samples * config['data']['train_split'])
-        val_size = int(total_samples * config['data']['val_split'])
+        total_samples = len(df_processed)
+        # Perhitungan ukuran split harus memastikan setidaknya ada 1 sample di setiap set
+        # Menggunakan floor untuk train/val dan sisa untuk test lebih aman
+        train_size = int(np.floor(total_samples * config['data']['train_split']))
+        val_size = int(np.floor(total_samples * config['data']['val_split']))
         test_size = total_samples - train_size - val_size # Ukuran test adalah sisanya
 
         if train_size <= 0 or val_size <= 0 or test_size <= 0:
-             logger.error("Ukuran set data (train/val/test) terlalu kecil (<= 0). Sesuaikan split atau gunakan data lebih banyak.")
+             logger.error(f"Ukuran set data tidak memadai. Train: {train_size}, Val: {val_size}, Test: {test_size}. Sesuaikan split atau gunakan data lebih banyak.")
              return # Hentikan pipeline jika ukuran data tidak memadai
 
 
@@ -528,36 +438,54 @@ def run_pipeline(config):
         scaled_input_test = scaler_input.transform(input_test_numeric)
 
         scaled_target_val = scaler_target.transform(target_val)
-        # target_test tidak perlu diskalakan di sini, hanya input_test_numeric yang diskalakan
+        # target_test tidak perlu diskalakan di sini untuk evaluasi/inverse transform nanti,
+        # hanya input_test_numeric yang diskalakan untuk dimasukkan ke model.
 
         # Membuat Kosakata untuk Teks (jika digunakan)
-        if feature_cols_text: # Cek apakah fitur teks benar-benar digunakan
+        if config['use_text_input'] and feature_cols_text:
             logger.info("Membuat kosakata dari data pelatihan teks...")
             # Mengumpulkan semua token unik dari data pelatihan teks
             # Menggunakan API TensorFlow Strings: split
-            all_train_tokens_ragged = tf.strings.split(input_train_text)
-            all_train_tokens = all_train_tokens_ragged.values.numpy() # Ambil nilai tensor datar
-            unique_tokens = np.unique(all_train_tokens[all_train_tokens != b'']) # Hilangkan token kosong
+            # Ensure tokens are string before converting to tensor
+            input_train_text_str = tf.constant(input_train_text.tolist(), dtype=tf.string)
+            all_train_tokens_ragged = tf.strings.split(input_train_text_str)
+            # Add a placeholder for padding (if 0 is used for padding) and OOV bucket
+            # unique_tokens, _ = tf.unique(all_train_tokens_ragged.values)
+            # tf.unique requires session/eager mode. Use numpy for simplicity here.
+            all_train_tokens_np = all_train_tokens_ragged.values.numpy() # Ambil nilai tensor datar
+            unique_tokens_np = np.unique(all_train_tokens_np[all_train_tokens_np != b'']) # Hilangkan token kosong
+
+            # Add special tokens if needed (e.g., PAD, OOV, START, END)
+            # For simplicity with mask_zero=True and num_oov_buckets, TensorFlow handles PAD/OOV.
+            # PAD is typically 0. OOV is handled by num_oov_buckets.
 
             # Menggunakan API TensorFlow Lookup: StaticVocabularyTable
             # Membuat tabel lookup dari kosakata unik
-            keys = tf.constant(unique_tokens)
-            values = tf.range(tf.size(keys), dtype=tf.int64)
+            # Index 0 will be used for padding by default if mask_zero=True and input_dim includes 0.
+            # Let's shift unique tokens by 1 to reserve 0 for padding. OOV will get the last index.
+            keys = tf.constant(unique_tokens_np, dtype=tf.string)
+            values = tf.range(1, tf.size(keys) + 1, dtype=tf.int64) # Start values from 1
+            # Add OOV bucket. Size of OOV bucket is num_oov_buckets. Indices for OOV start after unique tokens.
+            num_oov_buckets = 1
+            oov_start_index = tf.size(keys) + 1 # OOV index will be this + offset (usually just this value)
+
             init = tf.lookup.KeyValueTensorInitializer(keys, values, key_dtype=tf.string, value_dtype=tf.int64)
-            # num_oov_buckets=1: 1 bucket untuk token di luar kosakata
-            vocabulary_table = tf.lookup.StaticVocabularyTable(init, num_oov_buckets=1)
-            vocabulary_size = vocabulary_table.size().numpy() + 1 # Ukuran kosakata + OOV bucket
-            logger.info(f"Ukuran kosakata teks: {vocabulary_size}")
-            # Decode untuk logging, handle jika unique_tokens kosong
-            if unique_tokens.size > 0:
-                 logger.info(f"Contoh token unik: {[t.decode('utf-8') for t in unique_tokens[:10]]}")
-            else:
-                 logger.warning("Tidak ada token unik yang ditemukan dalam data teks pelatihan. Input teks mungkin tidak efektif.")
+            # num_oov_buckets=1: 1 bucket untuk token di luar kosakata.
+            # Token di luar kosakata akan dipetakan ke index `vocabulary_size - 1` jika num_oov_buckets=1
+            vocabulary_table = tf.lookup.StaticVocabularyTable(init, num_oov_buckets=num_oov_buckets)
+            vocabulary_size = vocabulary_table.size().numpy() # Size includes unique keys + num_oov_buckets
+
+            # The ID 0 is reserved for padding when mask_zero=True. Ensure it's not in our vocab values.
+            # Our values start from 1, so 0 is implicitly reserved.
+
+            logger.info(f"Ukuran kosakata teks (termasuk OOV): {vocabulary_size}")
+            if len(unique_tokens_np) > 0:
+                logger.info(f"Contoh token unik (mapping value): {unique_tokens_np[:10]} -> {vocabulary_table.lookup(tf.constant(unique_tokens_np[:10])).numpy()}")
 
 
         # Membuat tf.data.Dataset dari data yang sudah diproses
         # Menggunakan API TensorFlow Data: from_tensor_slices
-        if feature_cols_text: # Cek apakah fitur teks benar-benar digunakan
+        if config['use_text_input'] and feature_cols_text:
             dataset_train_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_train, input_train_text), scaled_target_train))
             dataset_val_raw = tf.data.Dataset.from_tensor_slices(((scaled_input_val, input_val_text), scaled_target_val))
             # Target test tidak diskalakan, jadi gunakan target_test asli
@@ -570,58 +498,55 @@ def run_pipeline(config):
             dataset_test_raw = tf.data.Dataset.from_tensor_slices((scaled_input_test, target_test))
 
 
-        # Fungsi pemrosesan elemen dataset (untuk dipanggil di .map())
-        @tf.function # Keep this decorator for the main element processing function
-        def process_dataset_element(inputs, target_elem):
-            """Memproses elemen dataset (termasuk teks) sebelum windowing."""
-            processed_text = None # Default if text is not used
-            # Cek apakah input adalah tuple (numeric, text) atau hanya numeric
-            if isinstance(inputs, tuple) and len(inputs) == 2:
-                numeric_elem, text_elem = inputs
-                # Process text using the corrected function
-                processed_text = process_text_for_model(text_elem, config['data']['max_text_sequence_length'], vocabulary_table)
-                processed_inputs = (numeric_elem, processed_text)
-            else:
-                numeric_elem = inputs
-                processed_inputs = numeric_elem
+        # Fungsi untuk membuat window dan memproses elemen dataset
+        # Menggunakan @tf.function untuk kompilasi grafik
+        # Perlu sedikit modifikasi fungsi ini untuk menangani structure_split_inputs
+        # yang dihasilkan oleh window().flat_map(batch).map(...)
+        @tf.function
+        def process_window_elements(numeric_window, text_window, target_window):
+             """Memproses window data (termasuk teks) di dalam pipeline map."""
+             # numeric_window shape: (window_size, num_numeric_features)
+             # text_window shape: (window_size,) # string tensors
+             # target_window shape: (window_size, num_target_features) - we only need the LAST target!
 
-            return processed_inputs, target_elem # Mengembalikan tuple (inputs yang diproses, target)
+             # Get the last target element for this window
+             final_target = target_window[-1] # Use Aritmatika Indexing
 
+             processed_text_window = text_window # Default if text not used or no text column
 
-        # Fungsi untuk membuat pipeline tf.data dengan windowing, batching, dll.
-        def create_tf_dataset(dataset_raw, window_size, window_shift, drop_remainder, use_text_input_actual, max_text_sequence_length, vocabulary_table, shuffle=False, batch_size=None):
-            """
-            Membuat pipeline tf.data dengan pemrosesan elemen, windowing, batching, dll.
-            """
-            # Terapkan pemrosesan elemen (termasuk teks) sebelum windowing
-            # Gunakan use_text_input_actual untuk menentukan apakah input adalah tuple atau tidak
-            dataset_processed_elements = dataset_raw.map(
-                lambda inputs, target_elem: process_dataset_element(inputs, target_elem),
-                num_parallel_calls=tf.data.AUTOTUNE
-            )
-
-            # Kemudian terapkan windowing
-            dataset_windowed = dataset_processed_elements.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
-
-            # Kemudian flat_map untuk menggabungkan window dan batch
-            dataset_batched_windows = dataset_windowed.flat_map(lambda window: window.batch(window_size))
-
-            # Terapkan shuffle jika diminta (hanya untuk pelatihan)
-            if shuffle:
-                dataset_batched_windows = dataset_batched_windows.shuffle(config['data']['shuffle_buffer_size'])
-
-            # Terapkan batching akhir
-            if batch_size:
-                dataset_batched_windows = dataset_batched_windows.batch(batch_size)
-
-            # Cache dan prefetch
-            dataset_batched_windows = dataset_batched_windows.cache() # Cache setelah windowing dan batching window
-            dataset_batched_windows = dataset_batched_windows.prefetch(tf.data.AUTOTUNE)
-
-            return dataset_batched_windows
+             if config['use_text_input'] and feature_cols_text and vocabulary_table is not None:
+                 # Process each text element in the window
+                 # Map the text processing function over the window dimension
+                 # Use a wrapper function or lambda for the map call
+                 # Menggunakan API TensorFlow Strings dan Lookup di dalam process_text_for_model
+                 processed_text_window = tf.map_fn(
+                     lambda text_elem: process_text_for_model(text_elem, config['data']['max_text_sequence_length'], vocabulary_table),
+                     text_window,
+                     fn_output_signature=tf.int64 # Expected output dtype of the map function
+                 )
+                 # processed_text_window shape should now be (window_size, max_text_sequence_length)
 
 
-        # Membuat Pipeline tf.data untuk Train, Val, Test
+             # Return tuple that matches model input structure and the *final* target
+             if config['use_text_input'] and feature_cols_text:
+                 return (numeric_window, processed_text_window), final_target
+             else:
+                 return numeric_window, final_target
+
+
+        # Fungsi pembantu untuk windowing dan batching
+        def create_window_dataset(dataset_raw, window_size, window_shift, drop_remainder):
+             # Menggunakan API TensorFlow Data: window
+            dataset_windowed = dataset_raw.window(size=window_size, shift=window_shift, drop_remainder=drop_remainder)
+             # Menggunakan API TensorFlow Data: flat_map
+             # Menggunakan API TensorFlow Data: batch (untuk mengumpulkan elemen dalam window)
+            # flat_map must return a dataset. We apply batch(window_size) to collect elements of each window.
+            # Then flatten these window-batches into a dataset of window-tensors.
+            dataset_flattened = dataset_windowed.flat_map(lambda window: window.batch(window_size))
+            return dataset_flattened
+
+
+        # Membuat Pipeline tf.data (Windowing, Batching, Caching, Prefetching)
         # Menggunakan API TensorFlow Data: window
         # Menggunakan API TensorFlow Data: flat_map
         # Menggunakan API TensorFlow Data: shuffle
@@ -629,46 +554,35 @@ def run_pipeline(config):
         # Menggunakan API TensorFlow Data: cache
         # Menggunakan API TensorFlow Data: prefetch
         # Menggunakan API TensorFlow Data: AUTOTUNE
+        # Menggunakan API TensorFlow Data: map (untuk memproses teks dan memilih target)
 
         # Pipeline Pelatihan
-        dataset_train = create_tf_dataset(
-            dataset_train_raw,
-            config['parameter_windowing']['window_size'],
-            config['parameter_windowing']['window_shift'],
-            True, # drop_remainder
-            bool(feature_cols_text), # Gunakan bool(feature_cols_text) untuk use_text_input_actual
-            config['data']['max_text_sequence_length'],
-            vocabulary_table,
-            shuffle=True,
-            batch_size=config['training']['batch_size']
+        dataset_train_windowed = create_window_dataset(dataset_train_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True)
+        dataset_train = dataset_train_windowed.map(
+            lambda input_tuple, target_window: process_window_elements(*input_tuple, target_window) if config['use_text_input'] and feature_cols_text else process_window_elements(input_tuple, None, target_window), # Pass None for text if not used
+            num_parallel_calls=tf.data.AUTOTUNE
         )
+        dataset_train = dataset_train.shuffle(config['data']['shuffle_buffer_size'])
+        dataset_train = dataset_train.batch(config['training']['batch_size']).cache().prefetch(tf.data.AUTOTUNE)
+
 
         # Pipeline Validasi (tanpa shuffle)
-        dataset_val = create_tf_dataset(
-            dataset_val_raw,
-            config['parameter_windowing']['window_size'],
-            config['parameter_windowing']['window_shift'],
-            True, # drop_remainder
-            bool(feature_cols_text), # Gunakan bool(feature_cols_text) untuk use_text_input_actual
-            config['data']['max_text_sequence_length'],
-            vocabulary_table,
-            shuffle=False,
-            batch_size=config['training']['batch_size']
+        dataset_val_windowed = create_window_dataset(dataset_val_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True)
+        dataset_val = dataset_val_windowed.map(
+             lambda input_tuple, target_window: process_window_elements(*input_tuple, target_window) if config['use_text_input'] and feature_cols_text else process_window_elements(input_tuple, None, target_window),
+            num_parallel_calls=tf.data.AUTOTUNE
         )
+        dataset_val = dataset_val.batch(config['training']['batch_size']).cache().prefetch(tf.data.AUTOTUNE)
+
 
         # Pipeline Pengujian (tanpa shuffle, tanpa cache jika data test besar)
         # Cache data test hanya jika ukurannya relatif kecil
-        dataset_test = create_tf_dataset(
-            dataset_test_raw,
-            config['parameter_windowing']['window_size'],
-            config['parameter_windowing']['window_shift'],
-            True, # drop_remainder
-            bool(feature_cols_text), # Gunakan bool(feature_cols_text) untuk use_text_input_actual
-            config['data']['max_text_sequence_length'],
-            vocabulary_table,
-            shuffle=False,
-            batch_size=config['training']['batch_size']
+        dataset_test_windowed = create_window_dataset(dataset_test_raw, config['parameter_windowing']['window_size'], config['parameter_windowing']['window_shift'], True)
+        dataset_test = dataset_test_windowed.map(
+            lambda input_tuple, target_window: process_window_elements(*input_tuple, target_window) if config['use_text_input'] and feature_cols_text else process_window_elements(input_tuple, None, target_window),
+            num_parallel_calls=tf.data.AUTOTUNE
         )
+        dataset_test = dataset_test.batch(config['training']['batch_size']).prefetch(tf.data.AUTOTUNE)
 
 
         logger.info("Pipeline tf.data selesai dibuat.")
@@ -681,15 +595,17 @@ def run_pipeline(config):
     # --- Langkah 3: Definisi & Kompilasi Model ---
     logger.info("Langkah 3: Mendefinisikan atau memuat model...")
     model = None
+    # Define model architecture parameters
+    numeric_input_shape = (config['parameter_windowing']['window_size'], len(feature_cols_numeric))
+    # Text input shape is (window_size, max_text_sequence_length) after processing
+    text_input_shape = (config['parameter_windowing']['window_size'], config['data']['max_text_sequence_length']) if config['use_text_input'] and feature_cols_text else None
+    num_target_features = len(target_cols)
+
     try:
         if config['mode'] == 'initial_train':
             logger.info("Mode: initial_train. Mendefinisikan model baru.")
             # Menggunakan API Keras Model dan Layers
             # Mendefinisikan model QuantAI baru
-            numeric_input_shape = (config['parameter_windowing']['window_size'], len(feature_cols_numeric_present)) # Gunakan kolom yang benar-benar ada
-            text_input_shape = (config['parameter_windowing']['window_size'], config['data']['max_text_sequence_length']) if feature_cols_text else None # Gunakan bool(feature_cols_text)
-            num_target_features = len(target_cols_present) # Gunakan kolom target yang benar-benar ada
-
             model = build_quantai_model(config, numeric_input_shape, text_input_shape, num_target_features, vocabulary_size)
 
             # Kompilasi Model
@@ -710,52 +626,38 @@ def run_pipeline(config):
         elif config['mode'] in ['incremental_learn', 'predict_only']:
             load_path = config['model']['load_path']
             logger.info(f"Mode: {config['mode']}. Memuat model dari {load_path}")
-            # Menggunakan API Keras Models: load_model atau tf.saved_model.load
-            # Memuat model QuantAI yang sudah ada
+            # Menggunakan API Keras Models: load_model untuk format .h5
             if not os.path.exists(load_path):
-                 logger.error(f"File atau direktori model tidak ditemukan di {load_path}. Pastikan path benar dan model telah disimpan sebelumnya.")
+                 logger.error(f"File model tidak ditemukan di {os.path.abspath(load_path)}. Pastikan path benar dan model telah disimpan sebelumnya.")
                  return # Hentikan pipeline jika model tidak ditemukan untuk dimuat
 
             try:
-                 # Menggunakan API Keras Models: load_model
+                 # Menggunakan API Keras Models: load_model (untuk format .h5)
                 # custom_objects diperlukan jika model menggunakan layer/fungsi kustom yang tidak standar Keras
                 # Saat ini, kita hanya pakai layer standar, jadi tidak perlu custom_objects
                 model = tf.keras.models.load_model(load_path)
-                logger.info("Model berhasil dimuat menggunakan tf.keras.models.load_model.")
-            except Exception as e_keras:
-                logger.warning(f"Gagal memuat dengan tf.keras.models.load_model: {e_keras}. Mencoba tf.saved_model.load...")
-                try:
-                    # Menggunakan API TensorFlow SavedModel: load
-                    model = tf.saved_model.load(load_path)
-                    logger.info("Model berhasil dimuat menggunakan tf.saved_model.load.")
-                    # Jika memuat dengan tf.saved_model.load, mungkin perlu kompilasi ulang secara manual
-                    if config['mode'] == 'incremental_learn':
-                         # Menggunakan API Keras Model: compile
-                        logger.info("Mengkompilasi ulang model untuk incremental_learn.")
-                         # Menggunakan API Keras Optimizers
-                        optimizer = tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate'])
-                         # Menggunakan API Keras Losses
-                        loss_fn = tf.keras.losses.MeanAbsoluteError()
-                         # Menggunakan API Keras Metrics
-                        metrics = [tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsoluteError()]
-                        # Perlu memastikan objek yang dimuat memiliki metode compile jika dimuat dengan tf.saved_model.load
-                        # Jika model asli dibuat dengan Functional API/Sequential, ini seharusnya ada
-                        if hasattr(model, 'compile'):
-                             model.compile(optimizer=optimizer, loss=loss_fn, metrics=metrics)
-                             logger.info("Model berhasil dikompilasi ulang.")
-                        else:
-                             logger.warning("Model yang dimuat tidak memiliki metode compile. Tidak dapat melanjutkan pelatihan inkremental.")
-                             if config['mode'] == 'incremental_learn':
-                                 model = None # Set model ke None jika tidak bisa dikompilasi untuk incremental_learn
-
-
-                except Exception as e_savedmodel:
-                    logger.error(f"Gagal memuat model dari {load_path} dengan kedua metode: {e_savedmodel}")
-                    model = None # Set model ke None jika gagal memuat
+                logger.info("Model berhasil dimuat dari format .h5 menggunakan tf.keras.models.load_model.")
+            except Exception as e:
+                logger.error(f"Gagal memuat model dari {load_path}: {e}")
+                model = None # Set model ke None jika gagal memuat
 
             if model is not None:
                 logger.info("Model berhasil dimuat.")
-                # model.summary(print_fn=logger.info) # Ringkasan mungkin tidak tersedia untuk model yang dimuat dengan tf.saved_model.load
+                # Ringkasan mungkin tidak selalu akurat setelah dimuat, tapi coba cetak
+                # model.summary(print_fn=logger.info)
+
+                # Kompilasi ulang jika mode incremental_learn (diperlukan untuk training)
+                if config['mode'] == 'incremental_learn':
+                    logger.info("Mengkompilasi ulang model untuk incremental_learn.")
+                    # Menggunakan API Keras Optimizers
+                    optimizer = tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate'])
+                    # Menggunakan API Keras Losses
+                    loss_fn = tf.keras.losses.MeanAbsoluteError()
+                    # Menggunakan API Keras Metrics
+                    metrics = [tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsoluteError()]
+                    model.compile(optimizer=optimizer, loss=loss_fn, metrics=metrics)
+                    logger.info("Model berhasil dikompilasi ulang.")
+
 
         else:
             logger.error(f"Mode operasional tidak valid: {config['mode']}")
@@ -779,115 +681,251 @@ def run_pipeline(config):
             # Pastikan direktori save_path dan tensorboard_log_dir sudah dibuat di Langkah 6
             # atau buat di sini jika tidak ingin menunggu Langkah 6
             output_dir = config['output']['base_dir']
-            model_save_path_full = os.path.join(output_dir, config['output']['model_subdir'])
+            model_save_path_full = os.path.join(output_dir, config['output']['model_save_file']) # Path ke file .h5
             scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
-            eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
-            predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
-            tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
-
-
-            # Menggunakan API TensorFlow IO GFile: makedirs
-            # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
-            tf.io.gfile.makedirs(model_save_path_full)
+            tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir'])
+            # Membuat direktori induk untuk file model .h5
+            tf.io.gfile.makedirs(os.path.dirname(model_save_path_full))
             tf.io.gfile.makedirs(scaler_save_dir_full)
-            tf.io.gfile.makedirs(os.path.dirname(eval_results_path_full)) # Pastikan dir untuk file eval
-            tf.io.gfile.makedirs(os.path.dirname(predictions_path_full)) # Pastikan dir untuk file prediksi
-            tf.io.gfile.makedirs(tensorboard_log_dir_full) # Pastikan dir untuk log TensorBoard
+            tf.io.gfile.makedirs(tensorboard_log_dir_full)
 
 
-            if config['mode'] in ['initial_train', 'incremental_learn']:
-                # Menyimpan Model Terlatih (Hasil Pelatihan, Jalan Offline/Deploy Anywhere)
-                logger.info(f"Menyimpan model terlatih ke {model_save_path_full}...")
-                 # Menggunakan API TensorFlow SavedModel: save
-                # Jika model dimuat dengan tf.saved_model.load, mungkin perlu dikonversi ke Keras Model dulu
-                # atau pastikan objek yang dimuat memang bisa disimpan sebagai SavedModel
-                if isinstance(model, tf.keras.Model):
-                     tf.saved_model.save(model, model_save_path_full)
-                     logger.info("Model SavedModel berhasil disimpan.")
+            callbacks = [
+                 # Menggunakan API Keras Callbacks: EarlyStopping
+                tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=config['training']['early_stopping_patience'], restore_best_weights=True),
+                 # Menggunakan API Keras Callbacks: ModelCheckpoint
+                # Menyimpan model terbaik dalam format .h5
+                tf.keras.callbacks.ModelCheckpoint(filepath=model_save_path_full, monitor='val_loss', save_best_only=True, save_format='h5'), # <-- save_format='h5'
+                 # Menggunakan API Keras Callbacks: ReduceLROnPlateau (Menggunakan Aritmatika)
+                tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=config['training']['lr_reduce_factor'], patience=config['training']['lr_reduce_patience'], min_lr=config['training']['min_lr']),
+                 # Menggunakan API Keras Callbacks: TensorBoard
+                tf.keras.callbacks.TensorBoard(log_dir=tensorboard_log_dir_full)
+            ]
+
+            epochs_to_run = config['training']['epochs'] if config['mode'] == 'initial_train' else config['training']['incremental_epochs']
+
+            logger.info(f"Melatih selama {epochs_to_run} epoch.")
+            history = model.fit(
+                dataset_train,
+                epochs=epochs_to_run,
+                validation_data=dataset_val,
+                callbacks=callbacks
+            )
+            logger.info("Pelatihan selesai.")
+
+            # Muat kembali model terbaik setelah pelatihan selesai (ModelCheckpoint menyimpannya)
+            # Ini penting jika EarlyStopping menghentikan pelatihan sebelum epoch terakhir
+            logger.info(f"Memuat model terbaik dari {model_save_path_full}")
+             # Menggunakan API Keras Models: load_model (untuk format .h5)
+            try:
+                # custom_objects mungkin diperlukan di sini jika model menggunakan komponen kustom
+                model = tf.keras.models.load_model(model_save_path_full)
+                logger.info("Model terbaik berhasil dimuat setelah pelatihan.")
+            except Exception as e:
+                 logger.warning(f"Gagal memuat model terbaik setelah pelatihan dari {model_save_path_full}: {e}. Menggunakan model akhir dari fit().")
+                 # Jika gagal memuat model terbaik, gunakan model yang ada setelah fit()
+
+
+            # --- Fondasi Belajar Mandiri/Hybrid/Otonom (Loop Kustom Opsional) ---
+            # Jika diperlukan logika update bobot yang lebih granular dari model.fit,
+            # implementasikan loop kustom di sini menggunakan:
+            # @tf.function, tf.GradientTape, optimizer.apply_gradients, model.trainable_variables,
+            # tf.cond, tf.while_loop, tf.py_function, model.train_on_batch
+            # Contoh (pseudocode):
+            # @tf.function
+            # def custom_train_step(inputs, targets):
+            #     with tf.GradientTape() as tape:
+            #         predictions = model(inputs, training=True)
+            #         loss = model.compiled_loss(targets, predictions) # Menggunakan loss yang dikompilasi
+            #         # Tambahkan loss kustom jika ada: loss += sum(model.losses)
+            #     gradients = tape.gradient(loss, model.trainable_variables)
+            #     model.optimizer.apply_gradients(zip(gradients, model.trainable_variables)) # Menggunakan optimizer yang dikompilasi
+            #     # Update metrik kompilasi jika ada: model.compiled_metrics.update_state(targets, predictions)
+            #     return loss
+            #
+            # if config['mode'] == 'incremental_learn_custom': # Mode kustom baru
+            #     logger.info("Memulai pelatihan inkremental dengan loop kustom.")
+            #     # Pastikan dataset_new_data disiapkan di Langkah 2
+            #     if 'dataset_new_data' in locals():
+            #         for epoch in range(config['training']['incremental_epochs_custom']):
+            #             logger.info(f"Epoch inkremental kustom {epoch+1}/{config['training']['incremental_epochs_custom']}")
+            #             # Reset metrik jika menggunakan metrik kompilasi
+            #             # for metric in model.metrics: metric.reset_states()
+            #             for batch_inputs, batch_targets in dataset_new_data:
+            #                 batch_loss = custom_train_step(batch_inputs, batch_targets)
+            #                 # Logika otonom: if batch_loss < threshold: ...
+            #                 # Log loss atau metrik batch
+            #             # Log metrik epoch jika menggunakan metrik kompilasi
+            #             # eval_on_val_set() # Evaluasi pada set validasi secara berkala
+            #         logger.info("Pelatihan inkremental kustom selesai.")
+            #     else:
+            #          logger.warning("Dataset data baru tidak tersedia untuk pelatihan inkremental kustom.")
+
+
+        except Exception as e:
+            logger.error(f"Error selama Langkah 4: {e}")
+            # Lanjutkan ke langkah berikutnya meskipun ada error pelatihan,
+            # mungkin kita masih ingin menyimpan model yang dimuat atau melakukan prediksi.
+
+
+    # --- Langkah 5: Evaluation Model Akhir ---
+    eval_results = None
+    # Hanya lakukan evaluasi jika mode bukan 'predict_only' dan model berhasil dimuat/dilatih
+    if config['mode'] in ['initial_train', 'incremental_learn'] and model is not None:
+        logger.info("Langkah 5: Mengevaluasi model akhir...")
+        try:
+            # Menggunakan API Keras Model: evaluate
+            # Menggunakan Aritmatika di dalam metrik
+            # Pastikan model dikompilasi jika mode incremental_learn dan dimuat dengan tf.saved_model.load tanpa compile
+            # (Ini sudah ditangani di Langkah 3)
+            # Pastikan dataset_test tersedia
+            if hasattr(model, 'evaluate') and 'dataset_test' in locals():
+                logger.info(f"Dataset test size untuk evaluasi: {tf.data.Dataset.cardinality(dataset_test).numpy()} batches") # Log dataset size
+                eval_results = model.evaluate(dataset_test)
+                # model.metrics_names seharusnya tersedia setelah kompilasi
+                if hasattr(model, 'metrics_names'):
+                     logger.info(f"Hasil Evaluasi Akhir: {dict(zip(model.metrics_names, eval_results))}")
                 else:
-                     logger.warning("Objek model bukan tf.keras.Model. Tidak dapat menyimpan dalam format SavedModel standar.")
+                     logger.info(f"Hasil Evaluasi Akhir (metrik tidak tersedia): {eval_results}")
+
+            elif 'dataset_test' not in locals():
+                 logger.warning("Dataset test tidak tersedia. Tidak dapat melakukan evaluasi.")
+            else:
+                 logger.error("Model tidak memiliki metode evaluate. Tidak dapat melakukan evaluasi.")
 
 
-                # Menyimpan Scaler (Pendukung Offline/Deploy Anywhere)
-                logger.info(f"Menyimpan scaler ke {scaler_save_dir_full}...")
-                 # Menggunakan Joblib: dump
-                # Pastikan scaler_input dan scaler_target tersedia (dilatih di Langkah 2)
-                if 'scaler_input' in locals() and 'scaler_target' in locals():
-                     joblib.dump(scaler_input, os.path.join(scaler_save_dir_full, 'scaler_input.pkl'))
-                     joblib.dump(scaler_target, os.path.join(scaler_save_dir_full, 'scaler_target.pkl'))
-                     logger.info("Scaler berhasil disimpan.")
-                else:
-                     logger.warning("Scaler tidak tersedia. Tidak dapat menyimpan scaler.")
+        except Exception as e:
+            logger.error(f"Error selama Langkah 5: {e}")
+            # Lanjutkan ke langkah berikutnya meskipun ada error evaluasi
+
+    # --- Langkah 6: Penyimpanan Aset & Hasil (Menulis) ---
+    logger.info("Langkah 6: Menyimpan aset dan hasil...")
+    try:
+        # Pastikan direktori output ada (Menggunakan API TensorFlow IO GFile)
+        output_dir = config['output']['base_dir']
+        # Model .h5 disimpan oleh ModelCheckpoint, path diambil dari config['output']['model_save_file']
+        # scaler_save_dir_full = os.path.join(output_dir, config['output']['scaler_subdir'])
+        eval_results_path_full = os.path.join(output_dir, config['output']['eval_results_file'])
+        predictions_path_full = os.path.join(output_dir, config['output']['predictions_file'])
+        # tensorboard_log_dir_full = os.path.join(output_dir, config['output']['tensorboard_log_dir']) # Path ini digunakan oleh callback
 
 
-                # Menyimpan Hasil Evaluasi (Hasil Output)
-                if eval_results is not None:
-                    logger.info(f"Menyimpan hasil evaluasi ke {eval_results_path_full}...")
-                    # Pastikan model.metrics_names tersedia jika eval_results bukan None
-                    if hasattr(model, 'metrics_names'):
-                        eval_dict = dict(zip(model.metrics_names, eval_results))
-                        # Menggunakan Python Standard Library: open dan json.dump (Menulis)
-                        with open(eval_results_path_full, 'w') as f:
-                            json.dump(eval_dict, f, indent=4)
-                        logger.info("Hasil evaluasi berhasil disimpan.")
+        # Membuat direktori induk untuk semua output file (Menggunakan API TensorFlow IO GFile: makedirs)
+        # Pastikan direktori dibuat sebelum menyimpan file di dalamnya
+        # Buat base dir dan sub-direktori scaler dan tensorboard logs
+        tf.io.gfile.makedirs(os.path.join(output_dir, config['output']['scaler_subdir']))
+        tf.io.gfile.makedirs(os.path.join(output_dir, config['output']['tensorboard_log_dir']))
+        # Buat direktori induk untuk file eval_results dan predictions
+        tf.io.gfile.makedirs(os.path.dirname(eval_results_path_full))
+        tf.io.gfile.makedirs(os.path.dirname(predictions_path_full))
+
+
+        if config['mode'] in ['initial_train', 'incremental_learn']:
+            # Menyimpan Model Terlatih (Hasil Pelatihan, Jalan Offline/Deploy Anywhere)
+            # Model terbaik sudah disimpan oleh ModelCheckpoint di Langkah 4 dalam format .h5
+            # Path: config['output']['model_save_file']
+            logger.info(f"Model terbaik dalam format .h5 sudah disimpan oleh ModelCheckpoint di Langkah 4.")
+
+            # Menyimpan Scaler (Pendukung Offline/Deploy Anywhere)
+            logger.info(f"Menyimpan scaler ke {os.path.join(output_dir, config['output']['scaler_subdir'])}...")
+             # Menggunakan Joblib: dump
+            # Pastikan scaler_input dan scaler_target tersedia (dilatih di Langkah 2)
+            if 'scaler_input' in locals() and scaler_input is not None and 'scaler_target' in locals() and scaler_target is not None:
+                 joblib.dump(scaler_input, os.path.join(output_dir, config['output']['scaler_subdir'], 'scaler_input.pkl'))
+                 joblib.dump(scaler_target, os.path.join(output_dir, config['output']['scaler_subdir'], 'scaler_target.pkl'))
+                 logger.info("Scaler berhasil disimpan.")
+            else:
+                 logger.warning("Scaler tidak tersedia. Tidak dapat menyimpan scaler.")
+
+            # Menyimpan Kosakata Teks (jika digunakan)
+            if config['use_text_input'] and feature_cols_text and vocabulary_table is not None:
+                 vocab_file_path = os.path.join(output_dir, config['output'].get('vocabulary_file', 'scalers/vocabulary.txt')) # tambahkan path ke config jika perlu
+                 tf.io.gfile.makedirs(os.path.dirname(vocab_file_path)) # Pastikan dir ada
+                 # TensorFlow vocabulary_table tidak langsung menyimpan kosakata string aslinya
+                 # Kita perlu mendapatkan keys dari table dan menyimpannya
+                 try:
+                    # Mendapatkan keys dari lookup table
+                    # Ini agak tricky, mungkin perlu membuat map terbalik dari ID ke string jika table tidak mengekspos keys
+                    # Atau, simpan list unique_tokens_np yang digunakan untuk membuat table
+                    if 'unique_tokens_np' in locals():
+                        with open(vocab_file_path, 'w', encoding='utf-8') as f:
+                            for token in unique_tokens_np:
+                                f.write(token.decode('utf-8') + '\n')
+                        logger.info(f"Kosakata teks berhasil disimpan ke {vocab_file_path}.")
                     else:
-                         logger.warning("Nama metrik model tidak tersedia. Tidak dapat menyimpan hasil evaluasi dalam format dictionary.")
+                         logger.warning("Daftar token unik untuk kosakata tidak tersedia. Tidak dapat menyimpan kosakata.")
+
+                 except Exception as e:
+                     logger.warning(f"Gagal menyimpan kosakata teks: {e}")
 
 
-            # Menyimpan Prediksi (Hasil Output, Opsional untuk semua mode)
-            # Hanya simpan prediksi jika mode bukan 'initial_train' atau 'incremental_learn' DAN save_predictions True
-            # ATAU jika mode adalah 'predict_only' dan save_predictions True
-            if config['output'].get('save_predictions', False) and model is not None:
-                 # Tentukan dataset mana yang akan diprediksi berdasarkan mode
-                 dataset_to_predict = None
-                 if config['mode'] == 'predict_only':
-                     # Dalam mode predict_only, asumsikan dataset_test_raw adalah data yang akan diprediksi
-                     # Perlu membuat pipeline predict_only dari dataset_test_raw
-                     # Ini memerlukan sedikit penyesuaian di Langkah 2 untuk menyiapkan dataset_test_raw
-                     # atau membuat dataset_predict_only_raw secara terpisah
-                     # Untuk kesederhanaan saat ini, kita asumsikan dataset_test sudah siap untuk diprediksi
-                     if 'dataset_test' in locals():
-                         dataset_to_predict = dataset_test
-                         logger.info("Membuat prediksi pada dataset test (mode predict_only).")
-                     else:
-                          logger.warning("Dataset test tidak tersedia untuk prediksi dalam mode predict_only.")
-
-                 elif config['mode'] in ['initial_train', 'incremental_learn']:
-                     # Dalam mode training, prediksi biasanya dilakukan pada dataset test
-                     if 'dataset_test' in locals():
-                         dataset_to_predict = dataset_test
-                         logger.info("Membuat prediksi pada dataset test (mode training).")
-                     else:
-                         logger.warning("Dataset test tidak tersedia untuk prediksi setelah pelatihan.")
-
-                 if dataset_to_predict is not None:
-                    logger.info(f"Membuat dan menyimpan prediksi ke {predictions_path_full}...")
-                    # Menggunakan API Keras Model: predict
-                    # Menggunakan Aritmatika di dalam scaler inverse_transform
-                    predictions_scaled = model.predict(dataset_to_predict)
-
-                    # Pastikan scaler_target tersedia untuk inverse transform
-                    if 'scaler_target' in locals():
-                        predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
-
-                        # Membuat DataFrame hasil prediksi
-                        df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols_present]) # Gunakan kolom target yang benar-benar ada
-
-                        # Opsi: Gabungkan dengan data test asli (membutuhkan penanganan indeks)
-                        # Ini bisa rumit dengan windowing. Cara paling aman adalah menyimpan prediksi saja
-                        # atau menggabungkan data asli dan prediksi di luar pipeline ini.
-
-                        # Menggunakan Pandas to_csv o r to_json (Menulis)
-                        df_predictions.to_csv(predictions_path_full, index=False)
-                        logger.info("Prediksi berhasil disimpan.")
-                    else:
-                         logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
-
-               # else:
-               #     logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+            # Menyimpan Hasil Evaluasi (Hasil Output)
+            if eval_results is not None and model is not None and hasattr(model, 'metrics_names'):
+                logger.info(f"Menyimpan hasil evaluasi ke {eval_results_path_full}...")
+                # Pastikan model.metrics_names tersedia jika eval_results bukan None
+                eval_dict = dict(zip(model.metrics_names, eval_results))
+                # Menggunakan Python Standard Library: open dan json.dump (Menulis)
+                with open(eval_results_path_full, 'w') as f:
+                    json.dump(eval_dict, f, indent=4)
+                logger.info("Hasil evaluasi berhasil disimpan.")
+            elif eval_results is not None:
+                 logger.warning("Nama metrik model tidak tersedia. Tidak dapat menyimpan hasil evaluasi dalam format dictionary.")
 
 
-            logger.info("Langkah 6 selesai.")
+        # Menyimpan Prediksi (Hasil Output, Opsional untuk semua mode)
+        # Hanya simpan prediksi jika save_predictions True DAN model berhasil dimuat/dilatih
+        if config['output'].get('save_predictions', False) and model is not None:
+             # Tentukan dataset mana yang akan diprediksi berdasarkan mode
+             # Dalam semua mode, kita akan melakukan prediksi pada dataset test jika tersedia
+             dataset_to_predict = None
+             if 'dataset_test' in locals():
+                 dataset_to_predict = dataset_test
+                 logger.info("Membuat prediksi pada dataset test.")
+             else:
+                  logger.warning("Dataset test tidak tersedia untuk prediksi.")
+
+
+             if dataset_to_predict is not None and 'scaler_target' in locals() and scaler_target is not None:
+                logger.info(f"Membuat dan menyimpan prediksi ke {predictions_path_full}...")
+                # Menggunakan API Keras Model: predict
+                predictions_scaled = model.predict(dataset_to_predict)
+
+                # Pastikan scaler_target tersedia untuk inverse transform
+                # Menggunakan Aritmatika di dalam scaler inverse_transform
+                predictions_original_scale = scaler_target.inverse_transform(predictions_scaled)
+
+                # Membuat DataFrame hasil prediksi
+                df_predictions = pd.DataFrame(predictions_original_scale, columns=[f'{col}_Pred' for col in target_cols])
+
+                # Opsi: Gabungkan dengan data test asli (membutuhkan penanganan indeks)
+                # Ini bisa rumit dengan windowing. Cara paling aman adalah menyimpan prediksi saja
+                # atau menggabungkan data asli dan prediksi di luar pipeline ini.
+                # Jika perlu menggabungkan, Anda butuh data_test *asli* (sebelum windowing/batching)
+                # dan melakukan slicing/indexing yang tepat.
+                # Contoh sederhana (perlu disesuaikan dengan indexing window):
+                # try:
+                #     # Assume predictions align row-wise with the LAST element of each window in the original test data
+                #     # This requires careful handling of window_shift and drop_remainder
+                #     original_test_data_sliced = df_processed[train_size + val_size + config['parameter_windowing']['window_size'] -1 :][::config['parameter_windowing']['window_shift']]
+                #     df_predictions.index = original_test_data_sliced.index[:len(df_predictions)]
+                #     df_predictions = original_test_data_sliced.join(df_predictions)
+                #     logger.info("Prediksi digabungkan dengan data test asli.")
+                # except Exception as e_join:
+                #     logger.warning(f"Gagal menggabungkan prediksi dengan data test asli: {e_join}")
+
+
+                # Menggunakan Pandas to_csv (Menulis)
+                df_predictions.to_csv(predictions_path_full, index=False) # Set index=True jika ingin menyimpan index Date
+                logger.info("Prediksi berhasil disimpan.")
+             elif model is None:
+                  logger.warning("Model tidak tersedia. Tidak dapat membuat prediksi.")
+             elif ('scaler_target' in locals() and scaler_target is None) or ('scaler_target' not in locals()):
+                  logger.warning("Scaler target tidak tersedia. Tidak dapat melakukan inverse transform atau menyimpan prediksi.")
+             # else: # dataset_to_predict is None handled earlier
+             #      logger.warning("Tidak ada dataset yang ditentukan untuk prediksi.")
+
+
+        logger.info("Langkah 6 selesai.")
 
     except Exception as e:
         logger.error(f"Error selama Langkah 6: {e}")
@@ -914,9 +952,7 @@ if __name__ == "__main__":
         logger.info(f"Konfigurasi berhasil dimuat dari {config_path}")
         # logger.info(f"Konfigurasi: {config}") # Opsi: log seluruh config
     except FileNotFoundError:
-        logger.error(f"File konfigurasi tidak ditemukan di {config_path}.")
-        # Di GitHub Actions, kita tidak membuat config default jika tidak ditemukan
-        # karena path config diharapkan diberikan dengan benar oleh workflow.
+        logger.error(f"File konfigurasi tidak ditemukan di {config_path}. Pastikan path benar.")
         exit(1) # Keluar dengan kode error jika config tidak ditemukan
 
     except yaml.YAMLError as e:
@@ -925,7 +961,22 @@ if __name__ == "__main__":
 
     # Jalankan pipeline utama hanya jika config berhasil dimuat
     if config:
+        # Tambahkan path 'vocabulary_file' default ke config jika belum ada
+        if config['use_text_input'] and 'vocabulary_file' not in config['output']:
+             config['output']['vocabulary_file'] = os.path.join(config['output']['scaler_subdir'], 'vocabulary.txt')
+             logger.info(f"Menambahkan path default vocabulary_file: {config['output']['vocabulary_file']}")
+
+        # Tambahkan path 'model_save_file' default jika belum ada
+        if 'model_save_file' not in config['output']:
+             config['output']['model_save_file'] = os.path.join(config['output']['model_subdir'], 'best_model.h5') # Sesuaikan dengan nama file .h5
+             logger.info(f"Menambahkan path default model_save_file: {config['output']['model_save_file']}")
+
+        # Perbarui model load_path di config jika mode bukan initial_train
+        if config['mode'] in ['incremental_learn', 'predict_only'] and 'load_path' in config['model'] and '.h5' not in config['model']['load_path']:
+             logger.warning(f"model.load_path ({config['model']['load_path']}) di config sepertinya bukan file .h5. Pastikan sesuai dengan format simpan ('{config['output']['model_save_file']}').")
+
+
         run_pipeline(config)
-    else: # <--- Indentasi untuk 'else:' harus sejajar dengan 'if config:'
-        logger.error("Tidak ada konfigurasi yang tersedia. Menghentikan eksekusi.") # <--- Indentasi di dalam blok 'else:'
-        exit(1) # <--- Indentasi di dalam blok 'else:'
+    else:
+        logger.error("Tidak ada konfigurasi yang tersedia. Menghentikan eksekusi.")
+        exit(1)
