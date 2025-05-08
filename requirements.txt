@@ -1,8 +1,7 @@
 # requirements.txt
-tensorflow>=2.0
+tensorflow>=2.x
 pandas
 numpy
-PyYAML
 scikit-learn
+PyYAML
 joblib
-
