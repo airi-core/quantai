@@ -1,13 +1,13 @@
 **Audit Kode `quantai.py` dan Pencarian Kesalahan Logika:**
-
+# Diwajibkan hapus semua indikator teknikal, cukup tambahkan indikator teknikalnya adalah ema 21 ema 34 ema 89, lalu tambahkan pivot point fibonacci dengan 1 sebagai snr1, 1.618 snr2, 2 snr3, 2.618 snr4, 4.236 snr5.
 **Rekomendasi Peningkatan dan Otomatisasi (berdasarkan API MetaTrader 5 dan TensorFlow/Keras):**
 
 Berikut adalah daftar API yang relevan dari dokumen yang Anda berikan, beserta cara mereka dapat diintegrasikan untuk optimasi dan peningkatan fungsionalitas:
 
 2.  **MetaTrader 5 API untuk Data Real-time dan Historis:**
     * **`mt5.copy_rates_from()` / `mt5.copy_rates_from_pos()` / `mt5.copy_rates_range()`:**
-        * **Otomatisasi & Peningkatan:** Daripada memuat data dari file JSON statis (`XAU_1d_data_processed.json`), Anda bisa mengotomatiskan pengambilan data historis terbaru langsung dari MetaTrader 5. Ini memastikan model Anda dilatih dengan data paling mutakhir.
-        * **Integrasi:** Buat fungsi yang menggunakan API ini untuk mengambil data OHLCV untuk XAUUSD (atau simbol lain), memprosesnya (mirip dengan Langkah 2 Anda), lalu menyimpannya ke format yang bisa dibaca oleh pipeline Anda atau langsung memasukkannya ke pipeline.
+        * **Otomatisasi & Peningkatan:** Daripada memuat data dari file JSON statis (`XAU_1d_data_processed.json`), Anda bisa mengotomatiskan pengambilan data historis terbaru langsung dari MetaTrader 5. Ini memastikan model Anda dilatih dengan data paling mutakhir. Pastikan data yang diambil dari seluruh pasangan pair dari server metaquote-demo yang berada dalam metatrader5 ditimeframe H1 supaya model memiliki banyak dataset pelatihan. Wajib login dan masukan password. 
+        * **Integrasi:** Buat fungsi yang menggunakan API ini untuk mengambil data OHLCV untuk XAUUSD (dan semua simbol lain), memprosesnya (mirip dengan Langkah 2 Anda), lalu menyimpannya ke format yang bisa dibaca oleh pipeline Anda atau langsung memasukkannya ke pipeline. Setiap simbol diambil data historis sesuai komposisi epocs biar efesien, karena Anda dayTrading jadi windownya cukup 8 saja, sedangkan epoc cukup 34, histori harga yang ditarik usahakan 34 x 8 = 272 (untuk uji model) sesangkan dataset untuk pelatihan 27200 data per simbol. setiap data yang ditarik gunakan tahun yang berbeda, supaya tidak terjadi over fitting.
     * **`mt5.symbol_info_tick()`:**
         * **Peningkatan Fungsional:** Untuk prediksi real-time, `predict_next_day_prices` saat ini memerlukan `latest_data` sebagai input manual. Anda bisa memodifikasinya untuk mengambil `window_size` data terakhir langsung dari MT5 menggunakan `copy_rates_from_pos` dan kemudian tick terbaru jika diperlukan untuk fitur yang sangat up-to-date.
     * **`mt5.initialize()`, `mt5.login()`, `mt5.shutdown()`:** Ini adalah dasar untuk berinteraksi dengan MT5. Harus diimplementasikan di awal dan akhir skrip yang berinteraksi dengan MT5.
