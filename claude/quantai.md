@@ -4,37 +4,6 @@
 
 Berikut adalah daftar API yang relevan dari dokumen yang Anda berikan, beserta cara mereka dapat diintegrasikan untuk optimasi dan peningkatan fungsionalitas:
 
-**A. Peningkatan Pipeline Data dan Feature Engineering (Integrasi `quantai.py` dengan API Tambahan):**
-
-1.  **TensorFlow/Keras API untuk Data:**
-    * **`TimeSeriesGenerator` (Utilitas):** Meskipun Anda sudah menggunakan `tf.data.Dataset.from_tensor_slices` dan windowing manual, `TimeSeriesGenerator` bisa menjadi alternatif yang lebih *high-level* jika Anda memiliki data yang belum di-window dan ingin melakukannya dengan cara Keras yang lebih terstruktur, terutama jika tidak memerlukan fleksibilitas penuh dari windowing manual.
-        * **Peningkatan:** Bisa menyederhanakan bagian pembuatan `X_windowed` dan `y_windowed`.
-    * **`WindowGenerator` (Utilitas):** Jika Anda memerlukan fungsionalitas windowing yang lebih kompleks (misalnya, input dengan lebar berbeda, offset berbeda, label dengan lebar berbeda), ini bisa sangat berguna. Kode Anda saat ini melakukan windowing secara manual, yang sudah cukup untuk kasus ini.
-    * **`FeatureEngineering` (Integrasi Data):**
-        * **Peningkatan:** Ini adalah area krusial. Fungsi `add_technical_features` Anda **harus diintegrasikan**. Anda bisa melakukannya dengan:
-            1.  **Sebagai `tf.keras.layers.Lambda` layer:** Setelah data di-batch, Anda bisa menambahkan Lambda layer yang memanggil fungsi ini. Ini akan membuat feature engineering bagian dari grafik komputasi model.
-                ```python
-                # Di dalam build_model:
-                # inputs = Input(shape=input_shape)
-                # technical_features_layer = tf.keras.layers.Lambda(add_technical_features)(inputs)
-                # ... lanjutkan dengan layer LSTM/CNN menggunakan output dari technical_features_layer atau gabungan
-                ```
-            2.  **Preprocessing Step di `tf.data` pipeline:**
-                ```python
-                # def preprocess_batch(x_batch, y_batch):
-                #     processed_x = add_technical_features(x_batch) # Perlu disesuaikan jika add_technical_features tidak vectorized untuk batch
-                #     return processed_x, y_batch
-                # train_dataset = train_dataset.map(preprocess_batch, num_parallel_calls=tf.data.AUTOTUNE)
-                ```
-                Perlu diperhatikan bahwa `add_technical_features` Anda saat ini dirancang untuk input berbentuk `[batch, window, features]`. Jika Anda menerapkannya *sebelum* batching, Anda perlu menyesuaikannya. Menerapkannya sebagai Lambda layer setelah batching mungkin lebih mudah.
-    * **`OHLCVDataset` (Integrasi Data):** Jika Anda memiliki loader data khusus, Anda bisa mengabstraksikannya menjadi kelas seperti ini untuk reusabilitas. Saat ini, Anda memuat dari JSON secara langsung.
-    * **`MinMaxScaler` (Integrasi Data):** Anda sudah menggunakan `sklearn.preprocessing.MinMaxScaler`. Ini sudah baik. TensorFlow juga memiliki `tf.keras.layers.Normalization` yang bisa diadaptasi sebagai bagian dari model (pelajari statistik normalisasi dari data training).
-    * **`Augmentation` (Integrasi Data):** Untuk data time series finansial, augmentasi harus hati-hati. Teknik seperti menambahkan noise kecil atau time warping bisa dieksplorasi, tetapi harus divalidasi dampaknya.
-        * **Peningkatan Fungsional:** Dapat membantu model menjadi lebih robust jika dilakukan dengan benar.
-    * **`MICE` (Integrasi Data - Multiple Imputation by Chained Equations):** Jika data Anda sering memiliki nilai yang hilang (NaNs) yang signifikan, MICE adalah teknik yang lebih canggih untuk mengatasinya daripada sekadar menghapus baris atau mengisi dengan mean/median.
-        * **Peningkatan:** Meningkatkan kualitas data input jika banyak missing values.
-    * **`tf.data.Options()`:** Anda sudah menggunakannya, ini bagus untuk optimasi performa.
-
 2.  **MetaTrader 5 API untuk Data Real-time dan Historis:**
     * **`mt5.copy_rates_from()` / `mt5.copy_rates_from_pos()` / `mt5.copy_rates_range()`:**
         * **Otomatisasi & Peningkatan:** Daripada memuat data dari file JSON statis (`XAU_1d_data_processed.json`), Anda bisa mengotomatiskan pengambilan data historis terbaru langsung dari MetaTrader 5. Ini memastikan model Anda dilatih dengan data paling mutakhir.
