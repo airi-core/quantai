@@ -4,6 +4,7 @@
 # -Wajib menggunakan bahasa indonesia, jangan gunakan banyak jargon dalam dokumentasi 
 # -Wajib menambahkan API untuk menaikan perfoma, wajib tahu logika fungsi yang ditambahkan 
 # -Diwajibkan sebelum melakukan editinf sudah tahu apa yang akan ditambahkan, sesudah editing wajib audit sintaks 
+# -Diwajibkan melakukan editing end-to-end kode langsung berfungsi bukan potongan kode!
 # -Dilarang menghapus header ini, kode etik diterapkan untuk lapisan kemanan data!
 # ================================================================
 
