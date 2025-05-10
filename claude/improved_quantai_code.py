@@ -1,4 +1,10 @@
 # QuantAI: Model Prediksi Harga XAU dengan TensorFlow Data API (Ditingkatkan)
+# Developer & AI yang berkontribusi dalam pengembangan kode wajib mengikuti kode etik :
+# -Rilarang menghapus existing kode, logika, fungsi yang sudah ada 
+# -Wajib menggunakan bahasa indonesia, jangan gunakan banyak jargon dalam dokumentasi 
+# -Wajib menambahkan API untuk menaikan perfoma, wajib tahu logika fungsi yang ditambahkan 
+# -Diwajibkan sebelum melakukan editinf sudah tahu apa yang akan ditambahkan, sesudah editing wajib audit sintaks 
+# -Dilarang menghapus header ini, kode etik diterapkan untuk lapisan kemanan data!
 # ================================================================
 
 # Langkah 1: Impor Library yang dibutuhkan
